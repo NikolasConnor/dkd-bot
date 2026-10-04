@@ -57,6 +57,7 @@ VOTERS = {
     "@Cakcer_12": "Максим",
     "@Dronus01": "Андрей",
     "@Nikolas_Connor": "Никита",
+    "@wwwLenGrad": "Никита (2-й аккаунт)",
 }
 
 votes = []
