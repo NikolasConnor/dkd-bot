@@ -21,6 +21,9 @@ ELECTION_END = datetime(2026, 10, 7, 20, 0, tzinfo=MSK)
 TEST_USERNAMES = {"@Nikolas_Connor"}
 TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 
+# ===== ВИДЕО ПОСЛЕ ГОЛОСА =====
+VIDEO_URL = "https://github.com/Nikolas_Connor/dkd-bot/raw/main/18068381436657.mp4"
+
 # ===== КАНДИДАТЫ =====
 CANDIDATES = {
     "1": {
@@ -396,20 +399,36 @@ async def process_vote(callback: types.CallbackQuery):
     })
 
     suffix = "\n\n_Можешь голосовать ещё раз._" if tester else ""
-    await callback.message.edit_text(
+
+    # 1. Отправляем видео с короткой подписью
+    try:
+        await callback.message.answer_video(
+            video=VIDEO_URL,
+            caption="🗳 Твой голос принят!"
+        )
+    except Exception as e:
+        print(f"Не смог отправить видео: {e}")
+        await callback.message.answer("🗳 Твой голос принят!")
+
+    # 2. Красивое текстовое подтверждение
+    await callback.message.answer(
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "✅ ГОЛОС ПРИНЯТ!\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👤 Субъект: {voter_name}\n"
-        f"🗳 Выбор: {candidate_name}{suffix}"
+        f"🗳 Выбор: {candidate_name}{suffix}",
+        parse_mode="Markdown"
     )
 
+    # 3. Для тестера — предложение проголосовать ещё
     if tester:
         await callback.message.answer(
             "🧪 *Ещё раз?* Нажми /vote или выбери ниже:",
             reply_markup=build_ballot_keyboard(),
             parse_mode="Markdown"
         )
+
+    await callback.answer()
 
 
 @dp.message(Command("results"))
