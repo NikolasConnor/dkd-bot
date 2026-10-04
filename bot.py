@@ -10,21 +10,18 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 7934244888
 
-# Часовой пояс МСК (UTC+3)
 MSK = timezone(timedelta(hours=3))
 
-# ===== ОКНО ВЫБОРОВ =====
 ELECTION_START = datetime(2026, 10, 4, 14, 0, tzinfo=MSK)
 ELECTION_END = datetime(2026, 10, 7, 20, 0, tzinfo=MSK)
 
-# ===== ТЕСТОВЫЙ РЕЖИМ =====
 TEST_USERNAMES = {"@Nikolas_Connor"}
 TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 
-# ===== ВИДЕО ПОСЛЕ ГОЛОСА =====
-VIDEO_URL = "https://github.com/Nikolas_Connor/dkd-bot/raw/main/18068381436657.mp4"
+# ===== ВИДЕО (file_id) =====
+# После получения через /getvideoid — вставь сюда свой file_id
+VIDEO_FILE_ID = ""
 
-# ===== КАНДИДАТЫ =====
 CANDIDATES = {
     "1": {
         "name": "Блошихин Кирилл Вадимович",
@@ -53,7 +50,6 @@ CANDIDATES = {
     },
 }
 
-# ===== ГОЛОСУЮЩИЕ =====
 VOTERS = {
     "@Haiser101": "Иван",
     "@vozduhanprimee": "Тимофей",
@@ -65,7 +61,6 @@ VOTERS = {
 
 votes = []
 
-# Флаги, чтобы не дублировать автосообщения
 flags = {
     "test_end_notified": False,
     "election_end_notified": False,
@@ -76,7 +71,6 @@ flags = {
 dp = Dispatcher()
 
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def now_msk():
     return datetime.now(MSK)
 
@@ -238,14 +232,12 @@ def build_results_text():
     return text
 
 
-# ===== ФОНОВАЯ ЗАДАЧА =====
 async def background_watcher(bot: Bot):
     global flags
     while True:
         try:
             n = now_msk()
 
-            # 1. Снятие тестового режима в 13:00 04.10.2026
             if not flags["test_end_notified"] and n >= TEST_MODE_END:
                 try:
                     await bot.send_message(
@@ -264,7 +256,6 @@ async def background_watcher(bot: Bot):
                     print(f"Ошибка при снятии тестового режима: {e}")
                 flags["test_end_notified"] = True
 
-            # 2. Автообъявление после 20:00 07.10.2026
             if not flags["election_end_notified"] and n >= ELECTION_END:
                 text = build_results_text()
                 sent_to = set()
@@ -292,7 +283,6 @@ async def background_watcher(bot: Bot):
         await asyncio.sleep(30)
 
 
-# ===== ХЕНДЛЕРЫ =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -323,6 +313,20 @@ async def cmd_help(message: types.Message):
 @dp.message(Command("bios"))
 async def cmd_bios(message: types.Message):
     await message.answer(build_bios_text())
+
+
+# ===== ВРЕМЕННЫЙ ХЕНДЛЕР: получение file_id видео =====
+@dp.message(lambda m: m.video is not None)
+async def get_video_id(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    file_id = message.video.file_id
+    await message.answer(
+        "📹 *Твой file_id видео:*\n\n"
+        f"`{file_id}`\n\n"
+        "Скопируй его и вставь в код в переменную VIDEO_FILE_ID.",
+        parse_mode="Markdown"
+    )
 
 
 @dp.message(Command("vote"))
@@ -400,17 +404,20 @@ async def process_vote(callback: types.CallbackQuery):
 
     suffix = "\n\n_Можешь голосовать ещё раз._" if tester else ""
 
-    # 1. Отправляем видео с короткой подписью
-    try:
-        await callback.message.answer_video(
-            video=VIDEO_URL,
-            caption="🗳 Твой голос принят!"
-        )
-    except Exception as e:
-        print(f"Не смог отправить видео: {e}")
+    # 1. Видео — если file_id задан
+    if VIDEO_FILE_ID:
+        try:
+            await callback.message.answer_video(
+                video=VIDEO_FILE_ID,
+                caption="🗳 Твой голос принят!"
+            )
+        except Exception as e:
+            print(f"Не смог отправить видео: {e}")
+            await callback.message.answer("🗳 Твой голос принят!")
+    else:
         await callback.message.answer("🗳 Твой голос принят!")
 
-    # 2. Красивое текстовое подтверждение
+    # 2. Текстовое подтверждение
     await callback.message.answer(
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "✅ ГОЛОС ПРИНЯТ!\n"
@@ -420,7 +427,6 @@ async def process_vote(callback: types.CallbackQuery):
         parse_mode="Markdown"
     )
 
-    # 3. Для тестера — предложение проголосовать ещё
     if tester:
         await callback.message.answer(
             "🧪 *Ещё раз?* Нажми /vote или выбери ниже:",
@@ -454,7 +460,6 @@ async def cmd_reset(message: types.Message):
     await message.answer("🔄 Голоса сброшены.")
 
 
-# ===== ЗАПУСК =====
 async def main():
     if not BOT_TOKEN:
         print("❌ ОШИБКА: переменная BOT_TOKEN не задана!")
