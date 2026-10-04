@@ -12,7 +12,7 @@ ADMIN_ID = 7934244888
 
 MSK = timezone(timedelta(hours=3))
 
-ELECTION_START = datetime(2026, 10, 4, 14, 0, tzinfo=MSK)
+ELECTION_START = datetime(2026, 10, 4, 0, 0, tzinfo=MSK)
 ELECTION_END = datetime(2026, 10, 7, 20, 0, tzinfo=MSK)
 
 TEST_USERNAMES = {"@Nikolas_Connor"}
