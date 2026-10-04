@@ -25,7 +25,7 @@ VIDEO_FILE_ID = "BAACAgIAAxkBAANLasIfw2IcWeZwXgiPqm4Ne1fHeRAAAsapAAKmCxFKxM0Ykvp
 CANDIDATES = {
     "1": {
         "name": "Блошихин Кирилл Вадимович",
-        "bio": "Перепил Горохова, и тот передал ему власть. Стал временно исполняющим обязанности президента, сейчас находится на этой должности.",
+        "bio": "Перепил Горохова, и тот передал ему власть. Стал временно исполняющим обязанности президента.",
         "type": "main",
     },
     "2": {
@@ -35,12 +35,12 @@ CANDIDATES = {
     },
     "3": {
         "name": "Кирилл Поселков Романович",
-        "bio": "Единственный имеет девушку (интересный персонаж, однако). Главный генератор сбора на хате.",
+        "bio": "Единственный имеет девушку. Главный генератор сбора на хате.",
         "type": "main",
     },
     "4": {
         "name": "Горохов Никита Александрович",
-        "bio": "Был президентом, но после того как его перепил Блошихин, передал последнему бразды правления. Сейчас занимает должность премьер-министра.",
+        "bio": "Был президентом, но его перепил Блошихин. Сейчас премьер-министр.",
         "type": "additional",
     },
     "5": {
@@ -59,8 +59,6 @@ VOTERS = {
     "@Nikolas_Connor": {"id": 7934244888, "name": "Никита"},
     "@wwwLenGrad": {"id": None, "name": "Никита (2-й аккаунт)"},
 }
-
-VOTER_IDS = {7934244888}
 
 PRELOADED_VOTES = [
     {"username": "@Cakcer_12", "voter_name": "Максим", "candidate_id": "3"},
@@ -92,6 +90,10 @@ async def init_db():
                 voted_at TIMESTAMP DEFAULT NOW(),
                 added_by_admin BOOLEAN DEFAULT FALSE
             )
+        """)
+        # МИГРАЦИЯ: добавляем столбец, если база старая
+        await conn.execute("""
+            ALTER TABLE votes ADD COLUMN IF NOT EXISTS added_by_admin BOOLEAN DEFAULT FALSE
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS service_flags (
@@ -200,8 +202,9 @@ def is_tester(username):
 def is_allowed_to_vote(user_id, username):
     if username in VOTERS:
         return True
-    if user_id in VOTER_IDS:
-        return True
+    for uname, info in VOTERS.items():
+        if info.get("id") == user_id:
+            return True
     return False
 
 
@@ -332,7 +335,10 @@ async def build_results_text():
 
 async def build_status_text():
     all_votes = await get_all_votes()
-    voted_usernames = {v["username"] for v in all_votes if v["username"]}
+    voted_usernames = set()
+    for v in all_votes:
+        if v["username"]:
+            voted_usernames.add(v["username"])
 
     voted_list = []
     not_voted_list = []
@@ -359,7 +365,8 @@ async def build_votes_list_text():
     by_candidate = {cid: [] for cid in CANDIDATES}
     for v in all_votes:
         cid = v["candidate_id"]
-        marker = " (админ)" if v["added_by_admin"] else ""
+        added = v.get("added_by_admin", False)
+        marker = " (админ)" if added else ""
         by_candidate[cid].append(f"{v['voter_name']}{marker}")
 
     text = "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -392,7 +399,7 @@ def build_admin_add_vote_keyboard():
     for uname, info in VOTERS.items():
         buttons.append([InlineKeyboardButton(
             text=f"{info['name']} ({uname})",
-            callback_data=f"admin_addvote_subj_{uname}"
+            callback_data=f"admin_addvote_subj|{uname}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -414,7 +421,7 @@ def build_admin_del_vote_keyboard():
     for uname, info in VOTERS.items():
         buttons.append([InlineKeyboardButton(
             text=f"🗑 {info['name']} ({uname})",
-            callback_data=f"admin_delvote_{uname}"
+            callback_data=f"admin_delvote|{uname}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -445,6 +452,7 @@ async def cmd_admin(message: types.Message):
 @dp.callback_query(lambda c: c.data == "admin_back")
 async def admin_back(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
     await callback.message.edit_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -460,33 +468,46 @@ async def admin_back(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "admin_results")
 async def admin_results(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    text = await build_results_text()
-    await callback.message.answer(text, parse_mode="Markdown")
+    try:
+        text = await build_results_text()
+        await callback.message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        await callback.message.answer(f"Ошибка: {e}")
     await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data == "admin_status")
 async def admin_status(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    text = await build_status_text()
-    await callback.message.answer(text, parse_mode="Markdown")
+    try:
+        text = await build_status_text()
+        await callback.message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        await callback.message.answer(f"Ошибка: {e}")
     await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data == "admin_votes")
 async def admin_votes(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    text = await build_votes_list_text()
-    await callback.message.answer(text, parse_mode="Markdown")
+    try:
+        text = await build_votes_list_text()
+        await callback.message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        await callback.message.answer(f"Ошибка: {e}")
     await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data == "admin_add_vote")
 async def admin_add_vote(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
     await callback.message.edit_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -499,11 +520,12 @@ async def admin_add_vote(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_addvote_subj_"))
+@dp.callback_query(lambda c: c.data.startswith("admin_addvote_subj|"))
 async def admin_addvote_subj(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    username = callback.data.replace("admin_addvote_subj_", "")
+    username = callback.data.split("|", 1)[1]
     info = VOTERS.get(username)
     if not info:
         await callback.answer("Не найден.", show_alert=True)
@@ -522,8 +544,8 @@ async def admin_addvote_subj(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("admin_addvote_cand|"))
 async def admin_addvote_cand(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    # Формат: admin_addvote_cand|<username>|<cid>
     parts = callback.data.split("|")
     if len(parts) != 3:
         await callback.answer("Ошибка формата.", show_alert=True)
@@ -559,6 +581,7 @@ async def admin_addvote_cand(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "admin_del_vote")
 async def admin_del_vote(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
     await callback.message.edit_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -571,11 +594,12 @@ async def admin_del_vote(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_delvote_"))
+@dp.callback_query(lambda c: c.data.startswith("admin_delvote|"))
 async def admin_delvote(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
-    username = callback.data.replace("admin_delvote_", "")
+    username = callback.data.split("|", 1)[1]
     info = VOTERS.get(username)
     if not info:
         await callback.answer("Не найден.", show_alert=True)
@@ -592,6 +616,7 @@ async def admin_delvote(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "admin_reset_confirm")
 async def admin_reset_confirm(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
     await callback.message.edit_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -608,6 +633,7 @@ async def admin_reset_confirm(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "admin_reset_yes")
 async def admin_reset_yes(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
         return
     await clear_votes()
     await callback.message.edit_text("🔄 ВСЁ СБРОШЕНО.")
@@ -690,7 +716,10 @@ async def cmd_vote(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "bios")
 async def process_bios(callback: types.CallbackQuery):
-    await callback.message.answer(build_bios_text())
+    try:
+        await callback.message.answer(build_bios_text())
+    except Exception as e:
+        await callback.message.answer(f"Ошибка: {e}")
     await callback.answer()
 
 
@@ -701,57 +730,65 @@ async def process_noop(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("vote_"))
 async def process_vote(callback: types.CallbackQuery):
-    user = callback.from_user
-    username = f"@{user.username}" if user.username else None
-    tester = is_tester(username)
+    try:
+        user = callback.from_user
+        username = f"@{user.username}" if user.username else None
+        tester = is_tester(username)
 
-    if not tester and not is_allowed_to_vote(user.id, username):
-        await callback.answer("Ты не в списке голосующих.", show_alert=True)
-        return
-
-    status = get_election_status()
-    if not tester and status != "during":
-        await callback.answer("Голосование сейчас закрыто.", show_alert=True)
-        return
-
-    if not tester:
-        already_voted = await user_has_voted(user.id)
-        if not already_voted and username:
-            already_voted = await username_has_voted(username)
-        if already_voted:
-            await callback.answer("Ты уже голосовал!", show_alert=True)
+        if not tester and not is_allowed_to_vote(user.id, username):
+            await callback.answer("Ты не в списке голосующих.", show_alert=True)
             return
 
-    candidate_id = callback.data.split("_")[1]
-    candidate_name = CANDIDATES[candidate_id]["name"]
-    voter_name = get_voter_name(user.id, username) if not tester else "🧪 Никита (тест)"
+        status = get_election_status()
+        if not tester and status != "during":
+            await callback.answer("Голосование сейчас закрыто.", show_alert=True)
+            return
 
-    await save_vote(user.id, username, voter_name, candidate_id)
+        if not tester:
+            already_voted = await user_has_voted(user.id)
+            if not already_voted and username:
+                already_voted = await username_has_voted(username)
+            if already_voted:
+                await callback.answer("Ты уже голосовал!", show_alert=True)
+                return
 
-    suffix = "\n\nМожешь голосовать ещё раз." if tester else ""
-    caption = (
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ ГОЛОС ПРИНЯТ!\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Субъект: {voter_name}\n"
-        f"🗳 Выбор: {candidate_name}{suffix}"
-    )
+        candidate_id = callback.data.split("_")[1]
+        candidate_name = CANDIDATES[candidate_id]["name"]
+        voter_name = get_voter_name(user.id, username) if not tester else "🧪 Никита (тест)"
 
-    if VIDEO_FILE_ID:
-        try:
-            await callback.message.answer_video(video=VIDEO_FILE_ID, caption=caption)
-        except Exception as e:
-            print(f"Не смог отправить видео: {e}")
-            await callback.message.answer(caption)
-    else:
-        await callback.message.answer(caption)
+        await save_vote(user.id, username, voter_name, candidate_id)
 
-    if tester:
-        await callback.message.answer(
-            "🧪 Ещё раз? Нажми /vote или выбери ниже:",
-            reply_markup=build_ballot_keyboard()
+        suffix = "\n\nМожешь голосовать ещё раз." if tester else ""
+        caption = (
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "✅ ГОЛОС ПРИНЯТ!\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Субъект: {voter_name}\n"
+            f"🗳 Выбор: {candidate_name}{suffix}"
         )
-    await callback.answer()
+
+        if VIDEO_FILE_ID:
+            try:
+                await callback.message.answer_video(video=VIDEO_FILE_ID, caption=caption)
+            except Exception as e:
+                print(f"Не смог отправить видео: {e}")
+                await callback.message.answer(caption)
+        else:
+            await callback.message.answer(caption)
+
+        if tester:
+            await callback.message.answer(
+                "🧪 Ещё раз? Нажми /vote или выбери ниже:",
+                reply_markup=build_ballot_keyboard()
+            )
+
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка в process_vote: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
 
 
 @dp.message(Command("results"))
@@ -807,46 +844,3 @@ async def background_watcher(bot: Bot):
                     if uid in sent_to or uid < 0:
                         continue
                     sent_to.add(uid)
-                    try:
-                        await bot.send_message(uid, text)
-                    except Exception as e:
-                        print(f"Не смог отправить {uid}: {e}")
-
-                if ADMIN_ID not in sent_to:
-                    try:
-                        await bot.send_message(ADMIN_ID, text)
-                    except Exception as e:
-                        print(f"Не смог отправить админу: {e}")
-
-                flags["election_end_notified"] = True
-
-        except Exception as e:
-            print(f"Ошибка в watcher: {e}")
-
-        await asyncio.sleep(30)
-
-
-# ===== ЗАПУСК =====
-async def main():
-    global db_pool
-    if not BOT_TOKEN:
-        print("❌ ОШИБКА: BOT_TOKEN не задан!")
-        return
-    if not DATABASE_URL:
-        print("❌ ОШИБКА: DATABASE_URL не задан!")
-        return
-
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-    await init_db()
-    await preload_votes()
-    print("База данных подключена.")
-
-    bot = Bot(token=BOT_TOKEN)
-    asyncio.create_task(background_watcher(bot))
-
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
