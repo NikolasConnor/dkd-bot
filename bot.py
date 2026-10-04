@@ -1,10 +1,13 @@
 import asyncio
+import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = "8288063623:AAGHuZcugUL4yrt6m5aBZLiaDUdRmLc32gA"
+# Токен берётся из переменной окружения Railway
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 ADMIN_ID = 7934244888
 
 CANDIDATES = {
@@ -23,7 +26,6 @@ VOTERS = {
     "@Dronus01": "Андрей",
 }
 
-# 🧪 ТЕСТОВЫЙ РЕЖИМ
 TEST_USERNAMES = {
     "@Nikolas_Connor",
 }
@@ -32,7 +34,6 @@ votes = []
 # =============================================
 
 
-bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
@@ -191,6 +192,11 @@ async def cmd_reset(message: types.Message):
 
 
 async def main():
+    if not BOT_TOKEN:
+        print("❌ ОШИБКА: переменная BOT_TOKEN не задана!")
+        return
+
+    bot = Bot(token=BOT_TOKEN)
     print("Бот запущен...")
     await dp.start_polling(bot)
 
