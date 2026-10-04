@@ -844,3 +844,46 @@ async def background_watcher(bot: Bot):
                     if uid in sent_to or uid < 0:
                         continue
                     sent_to.add(uid)
+                    try:
+                        await bot.send_message(uid, text)
+                    except Exception as e:
+                        print(f"Не смог отправить {uid}: {e}")
+
+                if ADMIN_ID not in sent_to:
+                    try:
+                        await bot.send_message(ADMIN_ID, text)
+                    except Exception as e:
+                        print(f"Не смог отправить админу: {e}")
+
+                flags["election_end_notified"] = True
+
+        except Exception as e:
+            print(f"Ошибка в watcher: {e}")
+
+        await asyncio.sleep(30)
+
+
+# ===== ЗАПУСК =====
+async def main():
+    global db_pool
+    if not BOT_TOKEN:
+        print("❌ ОШИБКА: BOT_TOKEN не задан!")
+        return
+    if not DATABASE_URL:
+        print("❌ ОШИБКА: DATABASE_URL не задан!")
+        return
+
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    await init_db()
+    await preload_votes()
+    print("База данных подключена.")
+
+    bot = Bot(token=BOT_TOKEN)
+    asyncio.create_task(background_watcher(bot))
+
+    print("Бот запущен...")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
