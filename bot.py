@@ -20,7 +20,7 @@ TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 
 # ===== ВИДЕО (file_id) =====
 # После получения через /getvideoid — вставь сюда свой file_id
-VIDEO_FILE_ID = ""
+VIDEO_FILE_ID = "BAACAgIAAxkBAANLasIfw2IcWeZwXgiPqm4Ne1fHeRAAAsapAAKmCxFKxM0YkvpfMeA9BA"
 
 CANDIDATES = {
     "1": {
