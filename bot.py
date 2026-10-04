@@ -356,8 +356,6 @@ async def build_status_text():
 
 async def build_votes_list_text():
     all_votes = await get_all_votes()
-
-    # Группируем: кандидат → список голосующих
     by_candidate = {cid: [] for cid in CANDIDATES}
     for v in all_votes:
         cid = v["candidate_id"]
@@ -367,14 +365,12 @@ async def build_votes_list_text():
     text = "━━━━━━━━━━━━━━━━━━━━━\n"
     text += "📋 СПИСОК ГОЛОСОВ\n"
     text += "━━━━━━━━━━━━━━━━━━━━━\n\n"
-
     for cid, c in CANDIDATES.items():
         voters = by_candidate[cid]
         text += f"*{cid}. {c['name']}* — {len(voters)} голос(ов)\n"
         for voter in voters:
             text += f"  • {voter}\n"
         text += "\n"
-
     return text
 
 
@@ -392,7 +388,6 @@ def build_admin_keyboard():
 
 
 def build_admin_add_vote_keyboard():
-    """Выбор субъекта, за которого вносим голос."""
     buttons = []
     for uname, info in VOTERS.items():
         buttons.append([InlineKeyboardButton(
@@ -404,12 +399,11 @@ def build_admin_add_vote_keyboard():
 
 
 def build_admin_add_candidate_keyboard(username):
-    """Выбор кандидата, за которого вносим голос."""
     buttons = []
     for cid, c in CANDIDATES.items():
         buttons.append([InlineKeyboardButton(
             text=f"{cid}. {c['name']}",
-            callback_data=f"admin_addvote_cand_{username}_{cid}"
+            callback_data=f"admin_addvote_cand|{username}|{cid}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_add_vote")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -490,7 +484,6 @@ async def admin_votes(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ===== ВНЕСЕНИЕ ГОЛОСА =====
 @dp.callback_query(lambda c: c.data == "admin_add_vote")
 async def admin_add_vote(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -526,23 +519,24 @@ async def admin_addvote_subj(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_addvote_cand_"))
+@dp.callback_query(lambda c: c.data.startswith("admin_addvote_cand|"))
 async def admin_addvote_cand(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
-    # Формат: admin_addvote_cand_<username>_<cid>
-    parts = callback.data.replace("admin_addvote_cand_", "").rsplit("_", 1)
-    username = parts[0]
-    cid = parts[1]
+    # Формат: admin_addvote_cand|<username>|<cid>
+    parts = callback.data.split("|")
+    if len(parts) != 3:
+        await callback.answer("Ошибка формата.", show_alert=True)
+        return
+    username = parts[1]
+    cid = parts[2]
 
     info = VOTERS.get(username)
     if not info:
         await callback.answer("Субъект не найден.", show_alert=True)
         return
 
-    # Удалим старый голос (если был)
     await delete_vote_by_username(username)
-    # Добавим новый
     await save_vote(
         user_id=-1,
         username=username,
@@ -562,7 +556,6 @@ async def admin_addvote_cand(callback: types.CallbackQuery):
     await callback.answer("Готово!")
 
 
-# ===== УДАЛЕНИЕ ГОЛОСА =====
 @dp.callback_query(lambda c: c.data == "admin_del_vote")
 async def admin_del_vote(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -596,7 +589,6 @@ async def admin_delvote(callback: types.CallbackQuery):
     await callback.answer("Готово!")
 
 
-# ===== СБРОС =====
 @dp.callback_query(lambda c: c.data == "admin_reset_confirm")
 async def admin_reset_confirm(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -622,7 +614,7 @@ async def admin_reset_yes(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ===== ПРОЧИЕ ХЕНДЛЕРЫ =====
+# ===== ОБЫЧНЫЕ ХЕНДЛЕРЫ =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -781,6 +773,57 @@ async def cmd_reset(message: types.Message):
         return
     await clear_votes()
     await message.answer("🔄 Голоса сброшены.")
+
+
+# ===== ФОНОВАЯ ЗАДАЧА =====
+async def background_watcher(bot: Bot):
+    global flags
+    while True:
+        try:
+            n = now_msk()
+
+            if not flags["test_end_notified"] and n >= TEST_MODE_END:
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        "🧪 *ТЕСТОВЫЙ РЕЖИМ СНЯТ*\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "Теперь ты голосуешь как обычный субъект.\n"
+                        "С 14:00 МСК откроется голосование.",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"Ошибка при снятии тестового режима: {e}")
+                flags["test_end_notified"] = True
+
+            if not flags["election_end_notified"] and n >= ELECTION_END:
+                all_votes = await get_all_votes()
+                text = await build_results_text()
+
+                sent_to = set()
+                for v in all_votes:
+                    uid = v["user_id"]
+                    if uid in sent_to or uid < 0:
+                        continue
+                    sent_to.add(uid)
+                    try:
+                        await bot.send_message(uid, text)
+                    except Exception as e:
+                        print(f"Не смог отправить {uid}: {e}")
+
+                if ADMIN_ID not in sent_to:
+                    try:
+                        await bot.send_message(ADMIN_ID, text)
+                    except Exception as e:
+                        print(f"Не смог отправить админу: {e}")
+
+                flags["election_end_notified"] = True
+
+        except Exception as e:
+            print(f"Ошибка в watcher: {e}")
+
+        await asyncio.sleep(30)
 
 
 # ===== ЗАПУСК =====
