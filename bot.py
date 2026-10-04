@@ -1,23 +1,44 @@
 import asyncio
 import os
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================= НАСТРОЙКИ =================
-# Токен берётся из переменной окружения Railway
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 ADMIN_ID = 7934244888
 
+# Кандидаты (основные)
 CANDIDATES = {
-    "1": "Блошихин Кирилл Вадимович",
-    "2": "Сергей Сергеевич Косарев",
-    "3": "Кирилл Поселков Романович",
-    "4": "Никита",
-    "5": "ПРОТИВ ВСЕХ",
+    "1": {
+        "name": "Блошихин Кирилл Вадимович",
+        "bio": "Перепел Гороха, и тот передал ему власть, стал временно исполняющий обязанности президента, сейчас находится на этой должности.",
+        "type": "main",
+    },
+    "2": {
+        "name": "Сергей Сергеевич Косарев",
+        "bio": "Главный генератор сбора шашлычных банкетов, а ещё у него есть борода.",
+        "type": "main",
+    },
+    "3": {
+        "name": "Кирилл Поселков Романович",
+        "bio": "Единственный имеет девушку (интересный персонаж уже), главный генератор сбора на хате.",
+        "type": "main",
+    },
+    "4": {
+        "name": "Горохов Никита Александрович",
+        "bio": "Был президентом, но после того как его Перепел Блоха, передал последнему бразды правления. Сейчас занимает должность премьер-министра.",
+        "type": "additional",
+    },
+    "5": {
+        "name": "ПРОТИВ ВСЕХ",
+        "bio": "Выборы, выборы, Кандидаты пидоры...\nPS. Группа Ленинград",
+        "type": "against",
+    },
 }
 
+# Голосующие (username → субъект)
 VOTERS = {
     "@Haiser101": "Иван",
     "@vozduhanprimee": "Тимофей",
@@ -26,9 +47,8 @@ VOTERS = {
     "@Dronus01": "Андрей",
 }
 
-TEST_USERNAMES = {
-    "@Nikolas_Connor",
-}
+# Тестовый режим — можно голосовать много раз
+TEST_USERNAMES = {"@Nikolas_Connor"}
 
 votes = []
 # =============================================
@@ -37,12 +57,85 @@ votes = []
 dp = Dispatcher()
 
 
+def build_ballot_text():
+    date = datetime.now().strftime("%d.%m.%Y")
+    return (
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🗳 *БЮЛЛЕТЕНЬ ДКД*\n"
+        "Выборы Президента\n"
+        f"Дата: {date}\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Нажми на кнопку, чтобы отдать голос.\n"
+        "Один субъект — один голос."
+    )
+
+
+def build_ballot_keyboard():
+    buttons = []
+    # Основные кандидаты
+    for cid in ["1", "2", "3"]:
+        c = CANDIDATES[cid]
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{cid}. {c['name']}",
+                callback_data=f"vote_{cid}"
+            )
+        ])
+    # Доп. кандидат — отдельной строкой-пометкой
+    buttons.append([
+        InlineKeyboardButton(text="— Доп. кандидат —", callback_data="noop")
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text=f"4. {CANDIDATES['4']['name']}",
+            callback_data="vote_4"
+        )
+    ])
+    # Против всех
+    buttons.append([
+        InlineKeyboardButton(
+            text=f"5. {CANDIDATES['5']['name']}",
+            callback_data="vote_5"
+        )
+    ])
+    # Кнопка биографий
+    buttons.append([
+        InlineKeyboardButton(text="📖 Биографии кандидатов", callback_data="bios")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_bios_text():
+    text = "━━━━━━━━━━━━━━━━━━━━━\n"
+    text += "📖 *БИОГРАФИИ КАНДИДАТОВ*\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    # Основные
+    for cid in ["1", "2", "3"]:
+        c = CANDIDATES[cid]
+        text += f"*{cid}. {c['name']}*\n_{c['bio']}_\n\n"
+
+    # Доп. кандидат
+    text += "*Доп. кандидат:*\n\n"
+    c = CANDIDATES["4"]
+    text += f"*4. {c['name']}*\n_{c['bio']}_\n\n"
+
+    # Против всех
+    c = CANDIDATES["5"]
+    text += f"*5. {c['name']}*\n_{c['bio']}_\n\n"
+
+    text += "━━━━━━━━━━━━━━━━━━━━━\n"
+    text += "_Подпись: _______\n_"
+    return text
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "🏛 *Добро пожаловать на выборы Президента ДКД!*\n\n"
         "Команды:\n"
-        "/vote — проголосовать\n"
+        "/vote — получить бюллетень\n"
+        "/bios — биографии кандидатов\n"
         "/results — результаты (админ)\n"
         "/reset — сбросить голоса (админ)\n"
         "/help — помощь",
@@ -55,51 +148,58 @@ async def cmd_help(message: types.Message):
     await message.answer(
         "📖 *Помощь*\n\n"
         "1. Нажми /vote\n"
-        "2. Выбери кандидата\n"
+        "2. Выбери кандидата кнопкой\n"
         "3. Голос учтён автоматически\n\n"
-        "Голосуют только штаты, кроме кандидатов.\n"
-        "Один штат — один голос.",
+        "Один субъект — один голос.\n"
+        "Голосуют только штаты-избиратели, кроме кандидатов.",
         parse_mode="Markdown"
     )
+
+
+@dp.message(Command("bios"))
+async def cmd_bios(message: types.Message):
+    await message.answer(build_bios_text(), parse_mode="Markdown")
 
 
 @dp.message(Command("vote"))
 async def cmd_vote(message: types.Message):
     user = message.from_user
     username = f"@{user.username}" if user.username else None
-
     is_tester = username in TEST_USERNAMES
 
     if not is_tester and username not in VOTERS:
-        await message.answer("❌ Ты не в списке голосующих штатов.")
+        await message.answer("❌ Ты не в списке голосующих субъектов.")
         return
 
     if not is_tester:
         already_voted = any(v["user_id"] == user.id for v in votes)
         if already_voted:
-            await message.answer("⚠️ Ты уже проголосовал. Один штат — один голос.")
+            await message.answer("⚠️ Ты уже проголосовал. Один субъект — один голос.")
             return
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"{num}. {name}", callback_data=f"vote_{num}")]
-            for num, name in CANDIDATES.items()
-        ]
-    )
 
     prefix = "🧪 *ТЕСТОВЫЙ РЕЖИМ* — можешь голосовать много раз.\n\n" if is_tester else ""
     await message.answer(
-        f"{prefix}🗳 *Бюллетень ДКД*\n\nВыбери кандидата:",
-        reply_markup=keyboard,
+        prefix + build_ballot_text(),
+        reply_markup=build_ballot_keyboard(),
         parse_mode="Markdown"
     )
+
+
+@dp.callback_query(lambda c: c.data == "bios")
+async def process_bios(callback: types.CallbackQuery):
+    await callback.message.answer(build_bios_text(), parse_mode="Markdown")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "noop")
+async def process_noop(callback: types.CallbackQuery):
+    await callback.answer("Это просто пометка 🙂")
 
 
 @dp.callback_query(lambda c: c.data.startswith("vote_"))
 async def process_vote(callback: types.CallbackQuery):
     user = callback.from_user
     username = f"@{user.username}" if user.username else None
-
     is_tester = username in TEST_USERNAMES
 
     if not is_tester and username not in VOTERS:
@@ -113,8 +213,7 @@ async def process_vote(callback: types.CallbackQuery):
             return
 
     candidate_id = callback.data.split("_")[1]
-    candidate_name = CANDIDATES[candidate_id]
-
+    candidate_name = CANDIDATES[candidate_id]["name"]
     voter_name = VOTERS.get(username, "🧪 Тестер") if not is_tester else "🧪 Никита (тест)"
 
     votes.append({
@@ -126,22 +225,18 @@ async def process_vote(callback: types.CallbackQuery):
 
     suffix = "\n\n_Можешь голосовать ещё раз._" if is_tester else ""
     await callback.message.edit_text(
-        f"✅ *Голос принят!*\n\n"
-        f"Штат: {voter_name}\n"
-        f"Выбор: {candidate_name}{suffix}",
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ *ГОЛОС ПРИНЯТ!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Субъект: *{voter_name}*\n"
+        f"🗳 Выбор: *{candidate_name}*{suffix}",
         parse_mode="Markdown"
     )
 
     if is_tester:
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=f"{num}. {name}", callback_data=f"vote_{num}")]
-                for num, name in CANDIDATES.items()
-            ]
-        )
         await callback.message.answer(
             "🧪 *Ещё раз?* Нажми /vote или выбери ниже:",
-            reply_markup=keyboard,
+            reply_markup=build_ballot_keyboard(),
             parse_mode="Markdown"
         )
 
@@ -160,9 +255,17 @@ async def cmd_results(message: types.Message):
     for v in votes:
         counter[v["candidate_id"]] += 1
 
-    text = "📊 *Результаты голосования:*\n\n"
-    for cid, name in CANDIDATES.items():
-        text += f"{cid}. {name} — *{counter[cid]}* голос(ов)\n"
+    text = "━━━━━━━━━━━━━━━━━━━━━\n"
+    text += "📊 *РЕЗУЛЬТАТЫ ГОЛОСОВАНИЯ*\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    for cid, c in CANDIDATES.items():
+        marker = ""
+        if c["type"] == "additional":
+            marker = " _(доп.)_"
+        elif c["type"] == "against":
+            marker = " _(особый пункт)_"
+        text += f"{cid}. {c['name']}{marker} — *{counter[cid]}*\n"
 
     text += f"\n_Всего голосов: {len(votes)}_"
 
@@ -174,7 +277,7 @@ async def cmd_results(message: types.Message):
         if win_id == "5":
             text += "\n\n⚠️ *Победил «ПРОТИВ ВСЕХ» — выборы недействительны!*"
         else:
-            text += f"\n\n🏆 *Победитель: {CANDIDATES[win_id]}*"
+            text += f"\n\n🏆 *Победитель: {CANDIDATES[win_id]['name']}*"
     else:
         text += "\n\n⚖️ *Ничья!* Нужен второй тур."
 
