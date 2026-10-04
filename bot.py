@@ -25,7 +25,7 @@ TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 CANDIDATES = {
     "1": {
         "name": "Блошихин Кирилл Вадимович",
-        "bio": "Перепел Гороха, и тот передал ему власть, стал временно исполняющий обязанности президента, сейчас находится на этой должности.",
+        "bio": "Перепил Горохова, и тот передал ему власть. Стал временно исполняющим обязанности президента, сейчас находится на этой должности.",
         "type": "main",
     },
     "2": {
@@ -35,17 +35,17 @@ CANDIDATES = {
     },
     "3": {
         "name": "Кирилл Поселков Романович",
-        "bio": "Единственный имеет девушку (интересный персонаж уже), главный генератор сбора на хате.",
+        "bio": "Единственный имеет девушку (интересный персонаж, однако). Главный генератор сбора на хате.",
         "type": "main",
     },
     "4": {
         "name": "Горохов Никита Александрович",
-        "bio": "Был президентом, но после того как его Перепел Блоха, передал последнему бразды правления. Сейчас занимает должность премьер-министра.",
+        "bio": "Был президентом, но после того как его перепил Блошихин, передал последнему бразды правления. Сейчас занимает должность премьер-министра.",
         "type": "additional",
     },
     "5": {
         "name": "ПРОТИВ ВСЕХ",
-        "bio": "Выборы, выборы, Кандидаты пидоры...\nPS. Группа Ленинград",
+        "bio": "Выборы, выборы, кандидаты пидоры...\nPS. Группа «Ленинград».",
         "type": "against",
     },
 }
@@ -61,6 +61,7 @@ VOTERS = {
 }
 
 votes = []
+
 # Флаги, чтобы не дублировать автосообщения
 flags = {
     "test_end_notified": False,
@@ -96,11 +97,11 @@ def format_delta(delta):
     minutes = (total % 3600) // 60
     parts = []
     if days:
-        parts.append(f"{days} дн")
+        parts.append(f"{days} дн.")
     if hours:
-        parts.append(f"{hours} ч")
+        parts.append(f"{hours} ч.")
     if minutes and not days:
-        parts.append(f"{minutes} мин")
+        parts.append(f"{minutes} мин.")
     return " ".join(parts) if parts else "меньше минуты"
 
 
@@ -125,8 +126,8 @@ def build_ballot_text():
             "Выборы Президента\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             "⏳ *Выборы ещё не начались.*\n\n"
-            f"Старт: 04.10.2026, 14:00 МСК\n"
-            f"Конец: 07.10.2026, 20:00 МСК\n\n"
+            "Старт: 04.10.2026, 14:00 МСК\n"
+            "Конец: 07.10.2026, 20:00 МСК\n\n"
             f"До старта: *{format_delta(delta)}*"
         )
 
@@ -148,7 +149,7 @@ def build_ballot_text():
         "🗳 *БЮЛЛЕТЕНЬ ДКД*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🔒 *Выборы завершены.*\n\n"
-        "Голосование было с 04.10.2026 14:00\n"
+        "Голосование проходило с 04.10.2026 14:00\n"
         "по 07.10.2026 20:00 МСК.\n\n"
         "Смотри результаты: /results"
     )
@@ -263,7 +264,6 @@ async def background_watcher(bot: Bot):
             # 2. Автообъявление после 20:00 07.10.2026
             if not flags["election_end_notified"] and n >= ELECTION_END:
                 text = build_results_text()
-                # Рассылаем всем, кто голосовал (уникальные user_id)
                 sent_to = set()
                 for v in votes:
                     uid = v["user_id"]
@@ -275,7 +275,6 @@ async def background_watcher(bot: Bot):
                     except Exception as e:
                         print(f"Не смог отправить {uid}: {e}")
 
-                # Тебе, как админу, тоже (если не голосовал)
                 if ADMIN_ID not in sent_to:
                     try:
                         await bot.send_message(ADMIN_ID, text)
@@ -287,7 +286,7 @@ async def background_watcher(bot: Bot):
         except Exception as e:
             print(f"Ошибка в watcher: {e}")
 
-        await asyncio.sleep(30)  # проверка каждые 30 секунд
+        await asyncio.sleep(30)
 
 
 # ===== ХЕНДЛЕРЫ =====
@@ -309,9 +308,9 @@ async def cmd_start(message: types.Message):
 async def cmd_help(message: types.Message):
     await message.answer(
         "📖 *Помощь*\n\n"
-        "1. Нажми /vote\n"
-        "2. Выбери кандидата кнопкой\n"
-        "3. Голос учтён автоматически\n\n"
+        "1. Нажми /vote.\n"
+        "2. Выбери кандидата кнопкой.\n"
+        "3. Голос учтён автоматически.\n\n"
         "Один субъект — один голос.\n"
         "Выборы: 04.10.2026 14:00 — 07.10.2026 20:00 МСК.",
         parse_mode="Markdown"
@@ -335,7 +334,6 @@ async def cmd_vote(message: types.Message):
 
     status = get_election_status()
 
-    # Тестер может всё, даже вне окна
     if not tester and status != "during":
         await message.answer(build_ballot_text(), parse_mode="Markdown")
         return
@@ -445,7 +443,6 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
 
-    # Запускаем фоновую задачу
     asyncio.create_task(background_watcher(bot))
 
     print("Бот запущен...")
