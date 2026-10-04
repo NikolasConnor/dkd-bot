@@ -2,12 +2,14 @@ import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 7934244888
 
 MSK = timezone(timedelta(hours=3))
@@ -54,17 +56,26 @@ CANDIDATES = {
 
 # ===== ГОЛОСУЮЩИЕ =====
 VOTERS = {
-    "@Haiser101": "Иван",
-    "@vozduhanprimee": "Тимофей",
-    "@spar9d": "Владислав",
-    "@Cakcer_12": "Максим",
-    "@Dronus01": "Андрей",
-    "@Nikolas_Connor": "Никита",
-    "@wwwLenGrad": "Никита (2-й аккаунт)",
+    "@Haiser101": {"id": None, "name": "Иван"},
+    "@vozduhanprimee": {"id": None, "name": "Тимофей"},
+    "@spar9d": {"id": None, "name": "Владислав"},
+    "@Cakcer_12": {"id": None, "name": "Максим"},
+    "@Dronus01": {"id": None, "name": "Андрей"},
+    "@Nikolas_Connor": {"id": 7934244888, "name": "Никита"},
+    "@wwwLenGrad": {"id": None, "name": "Никита (2-й аккаунт)"},
 }
 
-votes = []
+VOTER_IDS = {7934244888}
 
+# ===== ПРЕДЗАПИСАННЫЕ ГОЛОСА (уже проголосовали) =====
+# Эти голоса добавляются в базу только ОДИН раз при первом запуске
+PRELOADED_VOTES = [
+    {"username": "@Cakcer_12", "voter_name": "Максим", "candidate_id": "3"},
+    {"username": "@Dronus01", "voter_name": "Андрей", "candidate_id": "3"},
+    {"username": "@vozduhanprimee", "voter_name": "Тимофей", "candidate_id": "3"},
+]
+
+db_pool = None
 flags = {
     "test_end_notified": False,
     "election_end_notified": False,
@@ -75,7 +86,84 @@ flags = {
 dp = Dispatcher()
 
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+# ===== БАЗА ДАННЫХ =====
+async def init_db():
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS votes (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                voter_name TEXT,
+                candidate_id TEXT NOT NULL,
+                voted_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # Таблица для служебных флагов (чтобы preloaded добавились 1 раз)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS service_flags (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+
+async def preload_votes():
+    """Добавляет предзаписанные голоса — только один раз."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM service_flags WHERE key = 'preloaded_votes'"
+        )
+        if row is not None:
+            return  # уже добавляли
+
+        for v in PRELOADED_VOTES:
+            await conn.execute("""
+                INSERT INTO votes (user_id, username, voter_name, candidate_id)
+                VALUES ($1, $2, $3, $4)
+            """, -1, v["username"], v["voter_name"], v["candidate_id"])
+
+        await conn.execute("""
+            INSERT INTO service_flags (key, value) VALUES ('preloaded_votes', 'done')
+        """)
+        print(f"Добавлены предзаписанные голоса: {len(PRELOADED_VOTES)}")
+
+
+async def save_vote(user_id, username, voter_name, candidate_id):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO votes (user_id, username, voter_name, candidate_id)
+            VALUES ($1, $2, $3, $4)
+        """, user_id, username, voter_name, candidate_id)
+
+
+async def get_all_votes():
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM votes")
+
+
+async def user_has_voted(user_id):
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM votes WHERE user_id = $1", user_id)
+        return row is not None
+
+
+async def username_has_voted(username):
+    """Проверка по username (для предзагруженных)"""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM votes WHERE username = $1", username
+        )
+        return row is not None
+
+
+async def clear_votes():
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM votes")
+        await conn.execute("DELETE FROM service_flags WHERE key = 'preloaded_votes'")
+
+
+# ===== ВСПОМОГАТЕЛЬНЫЕ =====
 def now_msk():
     return datetime.now(MSK)
 
@@ -115,6 +203,24 @@ def is_tester(username):
     return True
 
 
+def is_allowed_to_vote(user_id, username):
+    if username in VOTERS:
+        return True
+    if user_id in VOTER_IDS:
+        return True
+    return False
+
+
+def get_voter_name(user_id, username):
+    if username in VOTERS:
+        return VOTERS[username]["name"]
+    for uname, info in VOTERS.items():
+        if info.get("id") == user_id:
+            return info["name"]
+    return "Субъект"
+
+
+# ===== ТЕКСТЫ =====
 def build_ballot_text():
     status = get_election_status()
     n = now_msk()
@@ -195,9 +301,11 @@ def build_bios_text():
     return text
 
 
-def build_results_text():
+async def build_results_text():
+    all_votes = await get_all_votes()
+
     counter = {cid: 0 for cid in CANDIDATES}
-    for v in votes:
+    for v in all_votes:
         counter[v["candidate_id"]] += 1
 
     text = "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -212,7 +320,7 @@ def build_results_text():
             marker = " (особый пункт)"
         text += f"{cid}. {c['name']}{marker} — {counter[cid]}\n"
 
-    text += f"\nВсего голосов: {len(votes)}"
+    text += f"\nВсего голосов: {len(all_votes)}"
 
     max_votes = max(counter.values()) if counter else 0
     winners = [cid for cid, c in counter.items() if c == max_votes]
@@ -244,7 +352,6 @@ async def background_watcher(bot: Bot):
         try:
             n = now_msk()
 
-            # 1. Снятие тестового режима в 13:00 04.10.2026
             if not flags["test_end_notified"] and n >= TEST_MODE_END:
                 try:
                     await bot.send_message(
@@ -253,23 +360,22 @@ async def background_watcher(bot: Bot):
                         "🧪 *ТЕСТОВЫЙ РЕЖИМ СНЯТ*\n"
                         "━━━━━━━━━━━━━━━━━━━━━\n\n"
                         "Теперь ты голосуешь как обычный субъект.\n"
-                        "С 14:00 МСК откроется голосование —\n"
-                        "сможешь отдать один голос.\n\n"
-                        "_Голоса, отданные в тестовом режиме, обнулены._",
+                        "С 14:00 МСК откроется голосование.",
                         parse_mode="Markdown"
                     )
-                    votes.clear()
+                    # НЕ очищаем голоса — мы уже в базе
                 except Exception as e:
                     print(f"Ошибка при снятии тестового режима: {e}")
                 flags["test_end_notified"] = True
 
-            # 2. Автообъявление после 20:00 07.10.2026
             if not flags["election_end_notified"] and n >= ELECTION_END:
-                text = build_results_text()
+                all_votes = await get_all_votes()
+                text = await build_results_text()
+
                 sent_to = set()
-                for v in votes:
+                for v in all_votes:
                     uid = v["user_id"]
-                    if uid in sent_to:
+                    if uid in sent_to or uid < 0:
                         continue
                     sent_to.add(uid)
                     try:
@@ -299,8 +405,6 @@ async def cmd_start(message: types.Message):
         "Команды:\n"
         "/vote — получить бюллетень\n"
         "/bios — биографии кандидатов\n"
-        "/results — результаты (админ)\n"
-        "/reset — сбросить голоса (админ)\n"
         "/help — помощь",
         parse_mode="Markdown"
     )
@@ -324,7 +428,7 @@ async def cmd_bios(message: types.Message):
     await message.answer(build_bios_text())
 
 
-# ===== ВРЕМЕННЫЙ ХЕНДЛЕР: получение file_id видео =====
+# Временный хендлер для получения file_id (только админ)
 @dp.message(lambda m: m.video is not None)
 async def get_video_id(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -332,8 +436,7 @@ async def get_video_id(message: types.Message):
     file_id = message.video.file_id
     await message.answer(
         "📹 Твой file_id видео:\n\n"
-        f"`{file_id}`\n\n"
-        "Скопируй его и вставь в код в переменную VIDEO_FILE_ID.",
+        f"`{file_id}`",
         parse_mode="Markdown"
     )
 
@@ -344,8 +447,8 @@ async def cmd_vote(message: types.Message):
     username = f"@{user.username}" if user.username else None
     tester = is_tester(username)
 
-    if not tester and username not in VOTERS:
-        await message.answer("❌ Ты не в списке голосующих субъектов.")
+    if not tester and not is_allowed_to_vote(user.id, username):
+        await message.answer("❌ Ты не в списке голосующих субъектов ДКД.")
         return
 
     status = get_election_status()
@@ -355,7 +458,10 @@ async def cmd_vote(message: types.Message):
         return
 
     if not tester:
-        already_voted = any(v["user_id"] == user.id for v in votes)
+        already_voted = await user_has_voted(user.id)
+        # Дополнительно: проверка по username (для предзагруженных)
+        if not already_voted and username:
+            already_voted = await username_has_voted(username)
         if already_voted:
             await message.answer("⚠️ Ты уже проголосовал. Один субъект — один голос.")
             return
@@ -385,7 +491,7 @@ async def process_vote(callback: types.CallbackQuery):
     username = f"@{user.username}" if user.username else None
     tester = is_tester(username)
 
-    if not tester and username not in VOTERS:
+    if not tester and not is_allowed_to_vote(user.id, username):
         await callback.answer("Ты не в списке голосующих.", show_alert=True)
         return
 
@@ -395,25 +501,21 @@ async def process_vote(callback: types.CallbackQuery):
         return
 
     if not tester:
-        already_voted = any(v["user_id"] == user.id for v in votes)
+        already_voted = await user_has_voted(user.id)
+        if not already_voted and username:
+            already_voted = await username_has_voted(username)
         if already_voted:
             await callback.answer("Ты уже голосовал!", show_alert=True)
             return
 
     candidate_id = callback.data.split("_")[1]
     candidate_name = CANDIDATES[candidate_id]["name"]
-    voter_name = VOTERS.get(username, "🧪 Тестер") if not tester else "🧪 Никита (тест)"
+    voter_name = get_voter_name(user.id, username) if not tester else "🧪 Никита (тест)"
 
-    votes.append({
-        "user_id": user.id,
-        "username": username,
-        "voter_name": voter_name,
-        "candidate_id": candidate_id,
-    })
+    await save_vote(user.id, username, voter_name, candidate_id)
 
     suffix = "\n\nМожешь голосовать ещё раз." if tester else ""
 
-    # Формируем подпись к видео
     caption = (
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "✅ ГОЛОС ПРИНЯТ!\n"
@@ -422,7 +524,6 @@ async def process_vote(callback: types.CallbackQuery):
         f"🗳 Выбор: {candidate_name}{suffix}"
     )
 
-    # Одно сообщение: видео + подпись
     if VIDEO_FILE_ID:
         try:
             await callback.message.answer_video(
@@ -435,7 +536,6 @@ async def process_vote(callback: types.CallbackQuery):
     else:
         await callback.message.answer(caption)
 
-    # Тестеру — предложение проголосовать ещё раз
     if tester:
         await callback.message.answer(
             "🧪 Ещё раз? Нажми /vote или выбери ниже:",
@@ -451,11 +551,12 @@ async def cmd_results(message: types.Message):
         await message.answer("⛔ Только админ может смотреть результаты.")
         return
 
-    if not votes:
+    if not await get_all_votes():
         await message.answer("📊 Пока никто не голосовал.")
         return
 
-    await message.answer(build_results_text(), parse_mode="Markdown")
+    text = await build_results_text()
+    await message.answer(text, parse_mode="Markdown")
 
 
 @dp.message(Command("reset"))
@@ -464,18 +565,26 @@ async def cmd_reset(message: types.Message):
         await message.answer("⛔ Только админ может сбросить голоса.")
         return
 
-    votes.clear()
-    await message.answer("🔄 Голоса сброшены.")
+    await clear_votes()
+    await message.answer("🔄 Голоса сброшены (включая предзагруженные).")
 
 
 # ===== ЗАПУСК =====
 async def main():
+    global db_pool
     if not BOT_TOKEN:
-        print("❌ ОШИБКА: переменная BOT_TOKEN не задана!")
+        print("❌ ОШИБКА: BOT_TOKEN не задан!")
+        return
+    if not DATABASE_URL:
+        print("❌ ОШИБКА: DATABASE_URL не задан! Добавь PostgreSQL в Railway.")
         return
 
-    bot = Bot(token=BOT_TOKEN)
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    await init_db()
+    await preload_votes()
+    print("База данных подключена.")
 
+    bot = Bot(token=BOT_TOKEN)
     asyncio.create_task(background_watcher(bot))
 
     print("Бот запущен...")
