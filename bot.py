@@ -7,6 +7,8 @@ import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -81,11 +83,15 @@ PARTIES_INITIAL = [
     {"name": "Хаос", "emoji": "🎲", "description": "За спонтанность и движ.", "leader_username": "@Nikolas_Connor"},
 ]
 
-SECRET_WORD_VARIANTS = ["бог эфиопии", "бог ефиопии"]
-
 db_pool = None
 flags = {"test_end_notified": False, "election_end_notified": False}
 # =============================================
+
+
+class PartyForm(StatesGroup):
+    waiting_name = State()
+    waiting_emoji = State()
+    waiting_description = State()
 
 
 dp = Dispatcher()
@@ -360,7 +366,7 @@ async def preload_votes():
         print(f"Предзаписанные голоса: {len(PRELOADED_VOTES)}")
 
 
-# ===== РАБОТА С ГОЛОСАМИ =====
+# ===== ГОЛОСА =====
 async def save_vote(user_id, username, voter_name, candidate_id, added_by_admin=False):
     username = normalize_username(username)
     async with db_pool.acquire() as conn:
@@ -467,6 +473,17 @@ async def remove_role(subject_id, role_id):
 async def get_all_roles():
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT * FROM roles ORDER BY id")
+
+
+async def get_subject(user_id, username):
+    username = normalize_username(username)
+    if username:
+        s = await get_subject_by_username(username)
+        if s:
+            return s
+    if user_id:
+        return await get_subject_by_user_id(user_id)
+    return None
 
 
 # ===== ПАРТИИ =====
@@ -604,18 +621,7 @@ async def transfer_applications(old_target, new_target):
         """, new_target, old_target)
 
 
-# ===== ПРОВЕРКА ПРАВ =====
-async def get_subject(user_id, username):
-    username = normalize_username(username)
-    if username:
-        s = await get_subject_by_username(username)
-        if s:
-            return s
-    if user_id:
-        return await get_subject_by_user_id(user_id)
-    return None
-
-
+# ===== ПРАВА =====
 async def has_role(user_id, role_code):
     if not user_id:
         return False
@@ -1136,7 +1142,99 @@ async def cmd_apps(message: types.Message):
     await message.answer(text)
 
 
-# ===== КОДОВОЕ СЛОВО =====
+# ===== FSM: СОЗДАНИЕ ПАРТИИ =====
+@dp.callback_query(lambda c: c.data == "party_create")
+async def party_create(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        user = callback.from_user
+        username = normalize_username(user.username)
+        subject = await get_subject(user.id, username)
+        if not subject:
+            await callback.answer("Только для зарегистрированных.", show_alert=True)
+            return
+        user_party = await get_user_party(username)
+        if user_party:
+            await callback.answer("Ты уже в партии. Сначала выйди.", show_alert=True)
+            return
+        await callback.message.answer(
+            "➕ СОЗДАНИЕ ПАРТИИ\n\n"
+            "Шаг 1/3. Отправь НАЗВАНИЕ партии.\n"
+            "Например: Шашлык"
+        )
+        await state.set_state(PartyForm.waiting_name)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка party_create: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.message(PartyForm.waiting_name)
+async def party_get_name(message: types.Message, state: FSMContext):
+    name = message.text.strip() if message.text else ""
+    if len(name) < 2 or len(name) > 50:
+        await message.answer("Название должно быть от 2 до 50 символов. Попробуй снова.")
+        return
+    existing = await get_party_by_name(name)
+    if existing:
+        await message.answer("Партия с таким названием уже существует. Придумай другое.")
+        return
+    await state.update_data(party_name=name)
+    await message.answer(f"Название: {name}\n\nШаг 2/3. Отправь ЭМОДЗИ (один символ).\nНапример: 🍖")
+    await state.set_state(PartyForm.waiting_emoji)
+
+
+@dp.message(PartyForm.waiting_emoji)
+async def party_get_emoji(message: types.Message, state: FSMContext):
+    emoji = message.text.strip() if message.text else "🎭"
+    if len(emoji) > 5:
+        await message.answer("Отправь ОДИН эмодзи. Попробуй снова.")
+        return
+    await state.update_data(party_emoji=emoji)
+    await message.answer(f"Эмодзи: {emoji}\n\nШаг 3/3. Отправь ПРОГРАММУ партии (коротко).")
+    await state.set_state(PartyForm.waiting_description)
+
+
+@dp.message(PartyForm.waiting_description)
+async def party_get_description(message: types.Message, state: FSMContext):
+    description = message.text.strip() if message.text else ""
+    data = await state.get_data()
+    name = data.get("party_name")
+    emoji = data.get("party_emoji", "🎭")
+
+    user = message.from_user
+    username = normalize_username(user.username)
+    subject = await get_subject(user.id, username)
+
+    async with db_pool.acquire() as conn:
+        president = await conn.fetchrow("""
+            SELECT s.username FROM subjects s
+            JOIN subject_roles sr ON sr.subject_id = s.id
+            JOIN roles r ON r.id = sr.role_id
+            WHERE r.code = 'president'
+            LIMIT 1
+        """)
+    target = president["username"] if president else None
+
+    await create_application(
+        app_type="create_party",
+        author_username=username,
+        author_name=subject["full_name"] if subject else user.full_name,
+        target_username=target,
+        data={"name": name, "emoji": emoji, "description": description}
+    )
+
+    await message.answer(
+        f"✅ Заявка на создание партии отправлена!\n\n"
+        f"Название: {name}\nЭмодзи: {emoji}\nПрограмма: {description}\n\n"
+        f"Ожидай решения Президента."
+    )
+    await state.clear()
+
+
+# ===== ТЕКСТ (кодовое слово) =====
 @dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
 async def handle_text(message: types.Message):
     user = message.from_user
@@ -1151,7 +1249,7 @@ async def handle_text(message: types.Message):
             return
         async with db_pool.acquire() as conn:
             president = await conn.fetchrow("""
-                SELECT s.* FROM subjects s
+                SELECT s.username FROM subjects s
                 JOIN subject_roles sr ON sr.subject_id = s.id
                 JOIN roles r ON r.id = sr.role_id
                 WHERE r.code = 'president'
@@ -1276,32 +1374,6 @@ async def party_leave(callback: types.CallbackQuery):
         await callback.answer()
     except Exception as e:
         print(f"Ошибка party_leave: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data == "party_create")
-async def party_create(callback: types.CallbackQuery):
-    try:
-        user = callback.from_user
-        username = normalize_username(user.username)
-        subject = await get_subject(user.id, username)
-        if not subject:
-            await callback.answer("Только для зарегистрированных.", show_alert=True)
-            return
-        user_party = await get_user_party(username)
-        if user_party:
-            await callback.answer("Ты уже в партии. Сначала выйди.", show_alert=True)
-            return
-        await callback.message.answer(
-            "➕ СОЗДАНИЕ ПАРТИИ\n\nОтправь одним сообщением:\n1. Название\n2. Эмодзи (1 символ)\n3. Программу\n\n"
-            "Пример:\nШашлык\n🍖\nЗа встречи на природе."
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка party_create: {e}")
         try:
             await callback.answer(f"Ошибка: {e}", show_alert=True)
         except Exception:
