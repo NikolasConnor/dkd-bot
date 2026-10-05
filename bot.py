@@ -14,9 +14,7 @@ from aiogram.fsm.context import FSMContext
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 7934244888
-
 MSK = timezone(timedelta(hours=3))
-
 ELECTION_START = datetime(2026, 10, 4, 14, 0, tzinfo=MSK)
 ELECTION_END = datetime(2026, 10, 7, 20, 0, tzinfo=MSK)
 TEST_USERNAMES = {"@Nikolas_Connor"}
@@ -30,7 +28,6 @@ CANDIDATES = {
     "4": {"name": "Горохов Никита Александрович", "bio": "Бывший президент.", "type": "additional"},
     "5": {"name": "ПРОТИВ ВСЕХ", "bio": "PS. Группа «Ленинград».", "type": "against"},
 }
-
 VOTERS = {
     "@Haiser101": {"id": None, "name": "Яровой Иван Сергеевич"},
     "@vozduhanprimee": {"id": None, "name": "Бородин Тимофей Сергеевич"},
@@ -39,13 +36,11 @@ VOTERS = {
     "@Dronus01": {"id": None, "name": "Морев Андрей Олегович"},
     "@Nikolas_Connor": {"id": 7934244888, "name": "Горохов Никита Александрович"},
 }
-
 PRELOADED_VOTES = [
     {"username": "@Cakcer_12", "voter_name": "Головин Максим Сергеевич", "candidate_id": "3"},
     {"username": "@Dronus01", "voter_name": "Морев Андрей Олегович", "candidate_id": "3"},
     {"username": "@vozduhanprimee", "voter_name": "Бородин Тимофей Сергеевич", "candidate_id": "3"},
 ]
-
 SUBJECTS_INITIAL = [
     {"full_name": "Блошихин Кирилл Вадимович", "username": "@Bloha_71"},
     {"full_name": "Проселков Кирилл Романович", "username": "@G12_inthehearts"},
@@ -57,7 +52,6 @@ SUBJECTS_INITIAL = [
     {"full_name": "Морев Андрей Олегович", "username": "@Dronus01"},
     {"full_name": "Горохов Никита Александрович", "username": "@Nikolas_Connor"},
 ]
-
 ROLES_INITIAL = [
     {"code": "president", "name": "Президент", "emoji": "👑", "max_holders": 1},
     {"code": "premier", "name": "Премьер-министр", "emoji": "🏛", "max_holders": 1},
@@ -68,32 +62,18 @@ ROLES_INITIAL = [
     {"code": "party_leader", "name": "Лидер партии", "emoji": "🎭", "max_holders": None},
     {"code": "subject", "name": "Субъект", "emoji": "👤", "max_holders": None},
 ]
-
 INITIAL_ROLES = [
     {"username": "@G12_inthehearts", "role_code": "president"},
     {"username": "@Nikolas_Connor", "role_code": "premier"},
 ]
-
 PARTIES_INITIAL = [
     {"name": "Шашлык", "emoji": "🍖", "description": "За встречи на природе и мясо.", "leader_username": "@Bloha_71"},
     {"name": "Диван", "emoji": "🛋", "description": "За домашние посиделки и уют.", "leader_username": "@Cakcer_12"},
     {"name": "Хаос", "emoji": "🎲", "description": "За спонтанность и движ.", "leader_username": "@Nikolas_Connor"},
 ]
-
-REP_RULES = {
-    "vote": 1,
-    "application": 2,
-    "application_approved": 5,
-    "application_rejected": -2,
-    "law_approved": 10,
-    "law_rejected": -3,
-    "party_created": 15,
-    "party_dissolved": -10,
-}
-
+REP_RULES = {"vote": 1, "application": 2, "application_approved": 5, "application_rejected": -2, "law_approved": 10, "law_rejected": -3, "party_created": 15, "party_dissolved": -10}
 db_pool = None
 flags = {"test_end_notified": False, "election_end_notified": False}
-# =============================================
 
 
 class PartyForm(StatesGroup):
@@ -124,7 +104,6 @@ class ElectionForm(StatesGroup):
 dp = Dispatcher()
 
 
-# ===== УТИЛИТЫ =====
 def normalize_username(username):
     if not username:
         return None
@@ -141,7 +120,7 @@ def get_election_status():
     n = now_msk()
     if n < ELECTION_START:
         return "before"
-    elif n <= ELECTION_END:
+    if n <= ELECTION_END:
         return "during"
     return "after"
 
@@ -205,168 +184,25 @@ def check_secret_word(text):
     return False
 
 
-# ===== БАЗА ДАННЫХ =====
 async def init_db():
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS votes (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                username TEXT,
-                voter_name TEXT,
-                candidate_id TEXT NOT NULL,
-                voted_at TIMESTAMP DEFAULT NOW(),
-                added_by_admin BOOLEAN DEFAULT FALSE
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS service_flags (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS subjects (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT UNIQUE,
-                username TEXT UNIQUE,
-                full_name TEXT NOT NULL,
-                is_citizen BOOLEAN DEFAULT FALSE,
-                reputation INTEGER DEFAULT 0,
-                joined_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS roles (
-                id SERIAL PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                emoji TEXT DEFAULT '👤',
-                max_holders INTEGER
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS subject_roles (
-                id SERIAL PRIMARY KEY,
-                subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
-                role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
-                assigned_by BIGINT,
-                assigned_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(subject_id, role_id)
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS parties (
-                id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE NOT NULL,
-                emoji TEXT DEFAULT '🎭',
-                description TEXT DEFAULT '',
-                founder_username TEXT,
-                leader_username TEXT,
-                status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS party_members (
-                id SERIAL PRIMARY KEY,
-                party_id INTEGER REFERENCES parties(id) ON DELETE CASCADE,
-                username TEXT UNIQUE NOT NULL,
-                joined_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS applications (
-                id SERIAL PRIMARY KEY,
-                type TEXT NOT NULL,
-                author_username TEXT NOT NULL,
-                author_name TEXT,
-                target_username TEXT,
-                data JSONB DEFAULT '{}',
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT NOW(),
-                decided_at TIMESTAMP,
-                decided_by BIGINT,
-                reason TEXT
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS admin_sessions (
-                user_id BIGINT PRIMARY KEY,
-                is_active BOOLEAN DEFAULT FALSE,
-                activated_at TIMESTAMP
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS laws (
-                id SERIAL PRIMARY KEY,
-                title TEXT NOT NULL,
-                description TEXT,
-                author_username TEXT,
-                status TEXT DEFAULT 'duma',
-                duma_votes_for INTEGER DEFAULT 0,
-                duma_votes_against INTEGER DEFAULT 0,
-                deadline TIMESTAMP,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS law_votes (
-                id SERIAL PRIMARY KEY,
-                law_id INTEGER REFERENCES laws(id) ON DELETE CASCADE,
-                voter_username TEXT NOT NULL,
-                vote TEXT NOT NULL,
-                voted_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(law_id, voter_username)
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS decrees (
-                id SERIAL PRIMARY KEY,
-                title TEXT NOT NULL,
-                text TEXT,
-                author_username TEXT,
-                is_secret BOOLEAN DEFAULT FALSE,
-                secret_for TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS news (
-                id SERIAL PRIMARY KEY,
-                text TEXT NOT NULL,
-                source TEXT DEFAULT 'auto',
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS duma_elections (
-                id SERIAL PRIMARY KEY,
-                started_at TIMESTAMP DEFAULT NOW(),
-                ends_at TIMESTAMP,
-                status TEXT DEFAULT 'active',
-                results JSONB DEFAULT '[]'
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS duma_votes (
-                id SERIAL PRIMARY KEY,
-                election_id INTEGER REFERENCES duma_elections(id) ON DELETE CASCADE,
-                voter_username TEXT NOT NULL,
-                party_id INTEGER NOT NULL,
-                voted_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(election_id, voter_username)
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS president_term (
-                id SERIAL PRIMARY KEY,
-                username TEXT NOT NULL,
-                started_at TIMESTAMP DEFAULT NOW(),
-                ends_at TIMESTAMP,
-                status TEXT DEFAULT 'active'
-            )
-        """)
+        await conn.execute("""CREATE TABLE IF NOT EXISTS votes (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, username TEXT, voter_name TEXT, candidate_id TEXT NOT NULL, voted_at TIMESTAMP DEFAULT NOW(), added_by_admin BOOLEAN DEFAULT FALSE)""")
+        await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS added_by_admin BOOLEAN DEFAULT FALSE")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS service_flags (key TEXT PRIMARY KEY, value TEXT)""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS subjects (id SERIAL PRIMARY KEY, user_id BIGINT UNIQUE, username TEXT UNIQUE, full_name TEXT NOT NULL, is_citizen BOOLEAN DEFAULT FALSE, reputation INTEGER DEFAULT 0, joined_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS roles (id SERIAL PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, emoji TEXT DEFAULT '👤', max_holders INTEGER)""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS subject_roles (id SERIAL PRIMARY KEY, subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE, role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE, assigned_by BIGINT, assigned_at TIMESTAMP DEFAULT NOW(), UNIQUE(subject_id, role_id))""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS parties (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, emoji TEXT DEFAULT '🎭', description TEXT DEFAULT '', founder_username TEXT, leader_username TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS party_members (id SERIAL PRIMARY KEY, party_id INTEGER REFERENCES parties(id) ON DELETE CASCADE, username TEXT UNIQUE NOT NULL, joined_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS applications (id SERIAL PRIMARY KEY, type TEXT NOT NULL, author_username TEXT NOT NULL, author_name TEXT, target_username TEXT, data JSONB DEFAULT '{}', status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT NOW(), decided_at TIMESTAMP, decided_by BIGINT, reason TEXT)""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (user_id BIGINT PRIMARY KEY, is_active BOOLEAN DEFAULT FALSE, activated_at TIMESTAMP)""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS laws (id SERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT, author_username TEXT, status TEXT DEFAULT 'duma', duma_votes_for INTEGER DEFAULT 0, duma_votes_against INTEGER DEFAULT 0, deadline TIMESTAMP, created_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS law_votes (id SERIAL PRIMARY KEY, law_id INTEGER REFERENCES laws(id) ON DELETE CASCADE, voter_username TEXT NOT NULL, vote TEXT NOT NULL, voted_at TIMESTAMP DEFAULT NOW(), UNIQUE(law_id, voter_username))""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS decrees (id SERIAL PRIMARY KEY, title TEXT NOT NULL, text TEXT, author_username TEXT, is_secret BOOLEAN DEFAULT FALSE, secret_for TEXT, created_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS news (id SERIAL PRIMARY KEY, text TEXT NOT NULL, source TEXT DEFAULT 'auto', created_at TIMESTAMP DEFAULT NOW())""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS duma_elections (id SERIAL PRIMARY KEY, started_at TIMESTAMP DEFAULT NOW(), ends_at TIMESTAMP, status TEXT DEFAULT 'active', results JSONB DEFAULT '[]')""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS duma_votes (id SERIAL PRIMARY KEY, election_id INTEGER REFERENCES duma_elections(id) ON DELETE CASCADE, voter_username TEXT NOT NULL, party_id INTEGER NOT NULL, voted_at TIMESTAMP DEFAULT NOW(), UNIQUE(election_id, voter_username))""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS president_term (id SERIAL PRIMARY KEY, username TEXT NOT NULL, started_at TIMESTAMP DEFAULT NOW(), ends_at TIMESTAMP, status TEXT DEFAULT 'active')""")
 
 
 async def preload_roles():
@@ -375,11 +211,7 @@ async def preload_roles():
         if row is not None:
             return
         for r in ROLES_INITIAL:
-            await conn.execute("""
-                INSERT INTO roles (code, name, emoji, max_holders)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (code) DO NOTHING
-            """, r["code"], r["name"], r["emoji"], r["max_holders"])
+            await conn.execute("INSERT INTO roles (code, name, emoji, max_holders) VALUES ($1, $2, $3, $4) ON CONFLICT (code) DO NOTHING", r["code"], r["name"], r["emoji"], r["max_holders"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('roles_loaded', 'done')")
 
 
@@ -389,12 +221,7 @@ async def preload_subjects():
         if row is not None:
             return
         for s in SUBJECTS_INITIAL:
-            uname = normalize_username(s["username"])
-            await conn.execute("""
-                INSERT INTO subjects (username, full_name, is_citizen)
-                VALUES ($1, $2, TRUE)
-                ON CONFLICT (username) DO NOTHING
-            """, uname, s["full_name"])
+            await conn.execute("INSERT INTO subjects (username, full_name, is_citizen) VALUES ($1, $2, TRUE) ON CONFLICT (username) DO NOTHING", normalize_username(s["username"]), s["full_name"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('subjects_loaded', 'done')")
 
 
@@ -408,11 +235,7 @@ async def preload_initial_roles():
             subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", uname)
             role = await conn.fetchrow("SELECT id FROM roles WHERE code = $1", ir["role_code"])
             if subj and role:
-                await conn.execute("""
-                    INSERT INTO subject_roles (subject_id, role_id, assigned_by)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (subject_id, role_id) DO NOTHING
-                """, subj["id"], role["id"], ADMIN_ID)
+                await conn.execute("INSERT INTO subject_roles (subject_id, role_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (subject_id, role_id) DO NOTHING", subj["id"], role["id"], ADMIN_ID)
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('initial_roles_loaded', 'done')")
 
 
@@ -423,18 +246,10 @@ async def preload_parties():
             return
         for p in PARTIES_INITIAL:
             uname = normalize_username(p["leader_username"])
-            await conn.execute("""
-                INSERT INTO parties (name, emoji, description, founder_username, leader_username)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (name) DO NOTHING
-            """, p["name"], p["emoji"], p["description"], uname, uname)
+            await conn.execute("INSERT INTO parties (name, emoji, description, founder_username, leader_username) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO NOTHING", p["name"], p["emoji"], p["description"], uname, uname)
             party = await conn.fetchrow("SELECT id FROM parties WHERE name = $1", p["name"])
             if party:
-                await conn.execute("""
-                    INSERT INTO party_members (party_id, username)
-                    VALUES ($1, $2)
-                    ON CONFLICT (username) DO NOTHING
-                """, party["id"], uname)
+                await conn.execute("INSERT INTO party_members (party_id, username) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING", party["id"], uname)
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('parties_loaded', 'done')")
 
 
@@ -444,21 +259,13 @@ async def preload_votes():
         if row is not None:
             return
         for v in PRELOADED_VOTES:
-            await conn.execute("""
-                INSERT INTO votes (user_id, username, voter_name, candidate_id)
-                VALUES ($1, $2, $3, $4)
-            """, -1, normalize_username(v["username"]), v["voter_name"], v["candidate_id"])
+            await conn.execute("INSERT INTO votes (user_id, username, voter_name, candidate_id) VALUES ($1, $2, $3, $4)", -1, normalize_username(v["username"]), v["voter_name"], v["candidate_id"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('preloaded_votes', 'done')")
 
 
-# ===== ГОЛОСА =====
 async def save_vote(user_id, username, voter_name, candidate_id, added_by_admin=False):
-    username = normalize_username(username)
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO votes (user_id, username, voter_name, candidate_id, added_by_admin)
-            VALUES ($1, $2, $3, $4, $5)
-        """, user_id, username, voter_name, candidate_id, added_by_admin)
+        await conn.execute("INSERT INTO votes (user_id, username, voter_name, candidate_id, added_by_admin) VALUES ($1, $2, $3, $4, $5)", user_id, normalize_username(username), voter_name, candidate_id, added_by_admin)
 
 
 async def get_all_votes():
@@ -495,7 +302,6 @@ async def clear_votes():
         await conn.execute("DELETE FROM service_flags WHERE key = 'preloaded_votes'")
 
 
-# ===== СУБЪЕКТЫ =====
 async def get_subject_by_user_id(user_id):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM subjects WHERE user_id = $1", user_id)
@@ -530,12 +336,7 @@ async def add_reputation(username, amount):
 
 async def get_subject_roles(subject_id):
     async with db_pool.acquire() as conn:
-        return await conn.fetch("""
-            SELECT r.* FROM roles r
-            JOIN subject_roles sr ON sr.role_id = r.id
-            WHERE sr.subject_id = $1
-            ORDER BY r.id
-        """, subject_id)
+        return await conn.fetch("SELECT r.* FROM roles r JOIN subject_roles sr ON sr.role_id = r.id WHERE sr.subject_id = $1 ORDER BY r.id", subject_id)
 
 
 async def assign_role(subject_id, role_id, assigned_by):
@@ -550,11 +351,7 @@ async def assign_role(subject_id, role_id, assigned_by):
             holders = await conn.fetchval("SELECT COUNT(*) FROM subject_roles WHERE role_id = $1", role_id)
             if holders >= role["max_holders"]:
                 return False, f"Роль «{role['name']}» занята"
-        await conn.execute("""
-            INSERT INTO subject_roles (subject_id, role_id, assigned_by)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (subject_id, role_id) DO NOTHING
-        """, subject_id, role_id, assigned_by)
+        await conn.execute("INSERT INTO subject_roles (subject_id, role_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (subject_id, role_id) DO NOTHING", subject_id, role_id, assigned_by)
         return True, "OK"
 
 
@@ -584,16 +381,10 @@ async def has_role_by_username(username, role_code):
     if not username:
         return False
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT 1 FROM subjects s
-            JOIN subject_roles sr ON sr.subject_id = s.id
-            JOIN roles r ON r.id = sr.role_id
-            WHERE s.username = $1 AND r.code = $2
-        """, username, role_code)
+        row = await conn.fetchrow("SELECT 1 FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE s.username = $1 AND r.code = $2", username, role_code)
         return row is not None
 
 
-# ===== ПАРТИИ =====
 async def get_all_parties(active_only=True):
     async with db_pool.acquire() as conn:
         if active_only:
@@ -619,17 +410,10 @@ async def get_party_by_name(name):
 async def create_party(name, emoji, description, leader_username):
     leader_username = normalize_username(leader_username)
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO parties (name, emoji, description, founder_username, leader_username)
-            VALUES ($1, $2, $3, $4, $5)
-        """, name, emoji, description, leader_username, leader_username)
+        await conn.execute("INSERT INTO parties (name, emoji, description, founder_username, leader_username) VALUES ($1, $2, $3, $4, $5)", name, emoji, description, leader_username, leader_username)
         party = await conn.fetchrow("SELECT id FROM parties WHERE name = $1", name)
         if party:
-            await conn.execute("""
-                INSERT INTO party_members (party_id, username)
-                VALUES ($1, $2)
-                ON CONFLICT (username) DO NOTHING
-            """, party["id"], leader_username)
+            await conn.execute("INSERT INTO party_members (party_id, username) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING", party["id"], leader_username)
         return party
 
 
@@ -638,21 +422,12 @@ async def get_user_party(username):
     if not username:
         return None
     async with db_pool.acquire() as conn:
-        return await conn.fetchrow("""
-            SELECT p.* FROM parties p
-            JOIN party_members pm ON pm.party_id = p.id
-            WHERE pm.username = $1 AND p.status = 'active'
-        """, username)
+        return await conn.fetchrow("SELECT p.* FROM parties p JOIN party_members pm ON pm.party_id = p.id WHERE pm.username = $1 AND p.status = 'active'", username)
 
 
 async def add_party_member(party_id, username):
-    username = normalize_username(username)
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO party_members (party_id, username)
-            VALUES ($1, $2)
-            ON CONFLICT (username) DO NOTHING
-        """, party_id, username)
+        await conn.execute("INSERT INTO party_members (party_id, username) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING", party_id, normalize_username(username))
 
 
 async def remove_party_member(username):
@@ -667,30 +442,19 @@ async def dissolve_party(party_id):
 
 
 async def change_party_leader(party_id, new_leader_username):
-    new_leader_username = normalize_username(new_leader_username)
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE parties SET leader_username = $1 WHERE id = $2", new_leader_username, party_id)
+        await conn.execute("UPDATE parties SET leader_username = $1 WHERE id = $2", normalize_username(new_leader_username), party_id)
 
 
-# ===== ЗАЯВКИ =====
 async def create_application(app_type, author_username, author_name, target_username, data):
-    author_username = normalize_username(author_username)
-    target_username = normalize_username(target_username) if target_username else None
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO applications (type, author_username, author_name, target_username, data)
-            VALUES ($1, $2, $3, $4, $5)
-        """, app_type, author_username, author_name, target_username, json.dumps(data))
+        await conn.execute("INSERT INTO applications (type, author_username, author_name, target_username, data) VALUES ($1, $2, $3, $4, $5)", app_type, normalize_username(author_username), author_name, normalize_username(target_username) if target_username else None, json.dumps(data))
 
 
 async def get_pending_applications(target_username=None):
     async with db_pool.acquire() as conn:
         if target_username:
-            target_username = normalize_username(target_username)
-            return await conn.fetch("""
-                SELECT * FROM applications WHERE status = 'pending' AND target_username = $1
-                ORDER BY created_at
-            """, target_username)
+            return await conn.fetch("SELECT * FROM applications WHERE status = 'pending' AND target_username = $1 ORDER BY created_at", normalize_username(target_username))
         return await conn.fetch("SELECT * FROM applications WHERE status = 'pending' ORDER BY created_at")
 
 
@@ -701,18 +465,12 @@ async def get_application(app_id):
 
 async def approve_application(app_id, decided_by):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE applications SET status = 'approved', decided_at = NOW(), decided_by = $1
-            WHERE id = $2
-        """, decided_by, app_id)
+        await conn.execute("UPDATE applications SET status = 'approved', decided_at = NOW(), decided_by = $1 WHERE id = $2", decided_by, app_id)
 
 
 async def reject_application(app_id, decided_by, reason):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE applications SET status = 'rejected', decided_at = NOW(), decided_by = $1, reason = $2
-            WHERE id = $3
-        """, decided_by, reason, app_id)
+        await conn.execute("UPDATE applications SET status = 'rejected', decided_at = NOW(), decided_by = $1, reason = $2 WHERE id = $3", decided_by, reason, app_id)
 
 
 async def transfer_applications(old_target, new_target):
@@ -721,13 +479,20 @@ async def transfer_applications(old_target, new_target):
     if not old_target or not new_target:
         return
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE applications SET target_username = $1
-            WHERE target_username = $2 AND status = 'pending'
-        """, new_target, old_target)
+        await conn.execute("UPDATE applications SET target_username = $1 WHERE target_username = $2 AND status = 'pending'", new_target, old_target)
 
 
-# ===== АДМИН-СЕССИИ =====
+async def notify_author(bot, app, status_text):
+    if not app:
+        return
+    subj = await get_subject_by_username(app["author_username"])
+    if subj and subj["user_id"] and subj["user_id"] > 0:
+        try:
+            await bot.send_message(subj["user_id"], f"📋 Заявка #{app['id']}\n\n{status_text}")
+        except Exception as e:
+            print(f"Не смог уведомить: {e}")
+
+
 async def is_admin_active(user_id):
     if user_id != ADMIN_ID:
         return False
@@ -738,11 +503,7 @@ async def is_admin_active(user_id):
 
 async def activate_admin(user_id):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO admin_sessions (user_id, is_active, activated_at)
-            VALUES ($1, TRUE, NOW())
-            ON CONFLICT (user_id) DO UPDATE SET is_active = TRUE, activated_at = NOW()
-        """, user_id)
+        await conn.execute("INSERT INTO admin_sessions (user_id, is_active, activated_at) VALUES ($1, TRUE, NOW()) ON CONFLICT (user_id) DO UPDATE SET is_active = TRUE, activated_at = NOW()", user_id)
 
 
 async def deactivate_admin(user_id):
@@ -750,14 +511,10 @@ async def deactivate_admin(user_id):
         await conn.execute("UPDATE admin_sessions SET is_active = FALSE WHERE user_id = $1", user_id)
 
 
-# ===== ЗАКОНЫ =====
 async def create_law(title, description, author_username):
     deadline = now_msk() + timedelta(days=1)
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO laws (title, description, author_username, status, deadline)
-            VALUES ($1, $2, $3, 'duma', $4)
-        """, title, description, normalize_username(author_username), deadline)
+        await conn.execute("INSERT INTO laws (title, description, author_username, status, deadline) VALUES ($1, $2, $3, 'duma', $4)", title, description, normalize_username(author_username), deadline)
         return await conn.fetchrow("SELECT * FROM laws ORDER BY id DESC LIMIT 1")
 
 
@@ -792,13 +549,9 @@ async def update_law_status(law_id, status):
         await conn.execute("UPDATE laws SET status = $1 WHERE id = $2", status, law_id)
 
 
-# ===== УКАЗЫ =====
 async def create_decree(title, text, author_username, is_secret=False, secret_for=None):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO decrees (title, text, author_username, is_secret, secret_for)
-            VALUES ($1, $2, $3, $4, $5)
-        """, title, text, normalize_username(author_username), is_secret, secret_for)
+        await conn.execute("INSERT INTO decrees (title, text, author_username, is_secret, secret_for) VALUES ($1, $2, $3, $4, $5)", title, text, normalize_username(author_username), is_secret, normalize_username(secret_for) if secret_for else None)
 
 
 async def get_all_decrees():
@@ -806,7 +559,6 @@ async def get_all_decrees():
         return await conn.fetch("SELECT * FROM decrees ORDER BY id DESC")
 
 
-# ===== ГАЗЕТА =====
 async def add_news(text, source="auto"):
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO news (text, source) VALUES ($1, $2)", text, source)
@@ -817,17 +569,15 @@ async def get_news(limit=20):
         return await conn.fetch("SELECT * FROM news ORDER BY id DESC LIMIT $1", limit)
 
 
-# ===== ПРЕЗИДЕНТ =====
 async def get_active_president_term():
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM president_term WHERE status = 'active' ORDER BY id DESC LIMIT 1")
 
 
 async def start_president_term(username, ends_at):
-    username = normalize_username(username)
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE president_term SET status = 'finished' WHERE status = 'active'")
-        await conn.execute("INSERT INTO president_term (username, ends_at, status) VALUES ($1, $2, 'active')", username, ends_at)
+        await conn.execute("INSERT INTO president_term (username, ends_at, status) VALUES ($1, $2, 'active')", normalize_username(username), ends_at)
 
 
 async def end_president_term():
@@ -835,7 +585,6 @@ async def end_president_term():
         await conn.execute("UPDATE president_term SET status = 'finished' WHERE status = 'active'")
 
 
-# ===== ГОСДУМА =====
 async def start_duma_election(ends_at):
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO duma_elections (ends_at, status) VALUES ($1, 'active')", ends_at)
@@ -848,24 +597,20 @@ async def get_active_duma_election():
 
 
 async def vote_duma(election_id, voter_username, party_id):
-    voter_username = normalize_username(voter_username)
     async with db_pool.acquire() as conn:
-        existing = await conn.fetchrow("SELECT id FROM duma_votes WHERE election_id = $1 AND voter_username = $2", election_id, voter_username)
+        existing = await conn.fetchrow("SELECT id FROM duma_votes WHERE election_id = $1 AND voter_username = $2", election_id, normalize_username(voter_username))
         if existing:
             return False, "Ты уже голосовал"
-        await conn.execute("INSERT INTO duma_votes (election_id, voter_username, party_id) VALUES ($1, $2, $3)", election_id, voter_username, party_id)
+        await conn.execute("INSERT INTO duma_votes (election_id, voter_username, party_id) VALUES ($1, $2, $3)", election_id, normalize_username(voter_username), party_id)
         return True, "OK"
 
 
 async def finish_duma_election(election_id):
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT party_id, COUNT(*) as cnt FROM duma_votes
-            WHERE election_id = $1 GROUP BY party_id ORDER BY cnt DESC LIMIT 3
-        """, election_id)
+        rows = await conn.fetch("SELECT party_id, COUNT(*) as cnt FROM duma_votes WHERE election_id = $1 GROUP BY party_id ORDER BY cnt DESC LIMIT 3", election_id)
         await conn.execute("DELETE FROM subject_roles WHERE role_id IN (SELECT id FROM roles WHERE code = 'deputy')")
         role = await conn.fetchrow("SELECT id FROM roles WHERE code = 'deputy'")
-        winners_info = []
+        winners = []
         for idx, r in enumerate(rows):
             party = await conn.fetchrow("SELECT * FROM parties WHERE id = $1", r["party_id"])
             if not party:
@@ -873,33 +618,25 @@ async def finish_duma_election(election_id):
             members = await conn.fetch("SELECT username FROM party_members WHERE party_id = $1", party["id"])
             allowed = max(0, len(members) - idx)
             deputies = [m["username"] for m in members[:allowed]]
-            winners_info.append({"party": party["name"], "votes": r["cnt"], "deputies": deputies, "place": idx + 1})
+            winners.append({"party": party["name"], "votes": r["cnt"], "deputies": deputies, "place": idx + 1})
             for d in deputies:
                 subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", d)
                 if subj and role:
-                    await conn.execute("""
-                        INSERT INTO subject_roles (subject_id, role_id, assigned_by)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (subject_id, role_id) DO NOTHING
-                    """, subj["id"], role["id"], ADMIN_ID)
-        await conn.execute("UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2", json.dumps(winners_info), election_id)
-        return winners_info
+                    await conn.execute("INSERT INTO subject_roles (subject_id, role_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT (subject_id, role_id) DO NOTHING", subj["id"], role["id"], ADMIN_ID)
+        await conn.execute("UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2", json.dumps(winners), election_id)
+        return winners
 
+# ========== КОНЕЦ ЧАСТИ 1 ==========
+# ========== НАЧАЛО ЧАСТИ 2 ==========
 
-# ===== ТЕКСТЫ =====
-def build_subject_profile_text_sync(subject, roles, user_party, admin_mode=False):
+def build_subject_profile(subject, roles, user_party, admin_mode=False):
     roles_text = "\n".join([f"{r['emoji']} {r['name']}" for r in roles]) if roles else "👤 Субъект"
     joined = subject["joined_at"].strftime("%d.%m.%Y") if subject["joined_at"] else "—"
     citizen_text = "✅ Есть" if subject["is_citizen"] else "❌ Нет"
     party_text = f"{user_party['emoji']} {user_party['name']}" if user_party else "—"
-    text = "━━━━━━━━━━━━━━━━━━━━━\n👤 ПРОФИЛЬ СУБЪЕКТА\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"{subject['full_name']}\n"
-    text += f"Username: {subject['username'] or '—'}\n\n"
-    text += f"Должности:\n{roles_text}\n\n"
-    text += f"Партия: {party_text}\n"
-    text += f"Гражданство: {citizen_text}\n"
-    text += f"В ДКД с: {joined}\n"
-    text += f"Репутация: {subject['reputation']}"
+    text = "━━━━━━━━━━━━━━━━━━━━━\n👤 ПРОФИЛЬ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"{subject['full_name']}\nUsername: {subject['username'] or '—'}\n\n"
+    text += f"Должности:\n{roles_text}\n\nПартия: {party_text}\nГражданство: {citizen_text}\nВ ДКД с: {joined}\nРепутация: {subject['reputation']}"
     if admin_mode:
         text += "\n\n🔓 АДМИН-РЕЖИМ АКТИВЕН"
     return text
@@ -910,12 +647,10 @@ def build_ballot_text():
     n = now_msk()
     date = n.strftime("%d.%m.%Y %H:%M")
     if status == "before":
-        delta = ELECTION_START - n
-        return f"━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ Выборы ещё не начались.\n\nДо старта: {format_delta(delta)}"
+        return f"━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ Не начались.\n\nДо старта: {format_delta(ELECTION_START - n)}"
     if status == "during":
-        delta = ELECTION_END - n
-        return f"━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\nДата: {date} МСК\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ До конца: {format_delta(delta)}\n\nНажми на кнопку.\nОдин субъект — один голос."
-    return "━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n🔒 Выборы завершены."
+        return f"━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\nДата: {date} МСК\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ До конца: {format_delta(ELECTION_END - n)}\n\nОдин субъект — один голос."
+    return "━━━━━━━━━━━━━━━━━━━━━\n🗳 БЮЛЛЕТЕНЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n🔒 Завершены."
 
 
 def build_ballot_keyboard():
@@ -928,7 +663,7 @@ def build_ballot_keyboard():
 
 
 def build_bios_text():
-    text = "━━━━━━━━━━━━━━━━━━━━━\n📖 БИОГРАФИИ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text = "📖 БИОГРАФИИ\n\n"
     for cid in ["1", "2", "3", "4", "5"]:
         c = CANDIDATES[cid]
         text += f"{cid}. {c['name']}\n{c['bio']}\n\n"
@@ -948,7 +683,7 @@ async def build_results_text():
     winners = [cid for cid, c in counter.items() if c == max_votes]
     if len(winners) == 1:
         win_id = winners[0]
-        text += f"\n\n🏆 Победитель: {CANDIDATES[win_id]['name']}" if win_id != "5" else "\n\n⚠️ Против всех."
+        text += f"\n\n🏆 {CANDIDATES[win_id]['name']}" if win_id != "5" else "\n\n⚠️ Против всех."
     return text
 
 
@@ -962,30 +697,14 @@ async def build_status_text():
             voted_usernames.add(uname)
         if v["user_id"] and v["user_id"] > 0:
             voted_ids.add(v["user_id"])
-    voted_list, not_voted_list = [], []
+    voted, not_voted = [], []
     for uname, info in VOTERS.items():
         uname_norm = normalize_username(uname)
         uid = info.get("id")
         is_voted = uname_norm in voted_usernames or (uid and uid > 0 and uid in voted_ids)
-        (voted_list if is_voted else not_voted_list).append(f"{'✅' if is_voted else '❌'} {info['name']}")
-    text = "👥 СТАТУС\n\n"
-    text += "Проголосовали:\n" + ("\n".join(voted_list) if voted_list else "—")
-    text += "\n\nНе голосовали:\n" + ("\n".join(not_voted_list) if not_voted_list else "—")
-    return text
-
-
-async def build_votes_list_text():
-    all_votes = await get_all_votes()
-    by_candidate = {cid: [] for cid in CANDIDATES}
-    for v in all_votes:
-        marker = " (админ)" if v.get("added_by_admin", False) else ""
-        by_candidate[v["candidate_id"]].append(f"{v['voter_name']}{marker}")
-    text = "📋 СПИСОК ГОЛОСОВ\n\n"
-    for cid, c in CANDIDATES.items():
-        text += f"{cid}. {c['name']} — {len(by_candidate[cid])}\n"
-        for v in by_candidate[cid]:
-            text += f"  • {v}\n"
-        text += "\n"
+        (voted if is_voted else not_voted).append(("✅ " if is_voted else "❌ ") + info["name"])
+    text = "👥 СТАТУС\n\nПроголосовали:\n" + ("\n".join(voted) if voted else "—")
+    text += "\n\nНе голосовали:\n" + ("\n".join(not_voted) if not_voted else "—")
     return text
 
 
@@ -1011,7 +730,7 @@ async def build_roles_list_text():
 async def build_parties_list_text():
     parties = await get_all_parties()
     if not parties:
-        return "🎭 ПАРТИИ\n\nПока нет партий."
+        return "🎭 ПАРТИИ\n\nПока нет."
     text = "🎭 ПАРТИИ\n\n"
     for p in parties:
         members = await get_party_members(p["id"])
@@ -1021,22 +740,21 @@ async def build_parties_list_text():
 
 async def build_party_detail_text(party):
     members = await get_party_members(party["id"])
-    text = f"━━━━━━━━━━━━━━━━━━━━━\n{party['emoji']} {party['name'].upper()}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"{party['description']}\n\nЛидер: {party['leader_username']}\nСостав: {len(members)}\n"
+    text = f"━━━━━━━━━━━━━━━━━━━━━\n{party['emoji']} {party['name'].upper()}\n━━━━━━━━━━━━━━━━━━━━━\n\n{party['description']}\n\nЛидер: {party['leader_username']}\nСостав: {len(members)}\n"
     for m in members:
         text += f"  • {m['username']}\n"
     return text
 
 
-# ===== КЛАВИАТУРЫ =====
 def build_admin_keyboard(active=False):
-    activate_btn = "🔓 Активировать" if not active else "🔒 Деактивировать"
+    btn = "🔓 Активировать" if not active else "🔒 Деактивировать"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=activate_btn, callback_data="admin_toggle")],
+        [InlineKeyboardButton(text=btn, callback_data="admin_toggle")],
         [InlineKeyboardButton(text="👥 Субъекты", callback_data="admin_subjects")],
         [InlineKeyboardButton(text="🎭 Партии", callback_data="admin_parties")],
         [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_apps")],
         [InlineKeyboardButton(text="📜 Законы", callback_data="admin_laws")],
+        [InlineKeyboardButton(text="📢 Указы", callback_data="admin_decrees")],
         [InlineKeyboardButton(text="📰 Новости", callback_data="admin_news")],
         [InlineKeyboardButton(text="🗳 ГосДума", callback_data="admin_duma")],
         [InlineKeyboardButton(text="📊 Выборы", callback_data="admin_results")],
@@ -1190,7 +908,6 @@ def build_president_keyboard():
     ])
 
 
-# ===== ОСНОВНЫЕ КОМАНДЫ =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user = message.from_user
@@ -1199,20 +916,14 @@ async def cmd_start(message: types.Message):
     if subject:
         if subject["user_id"] != user.id and user.id:
             await update_subject_user_id(subject["username"], user.id)
-        await message.answer(
-            f"🏛 Добро пожаловать, {subject['full_name']}!\n\n"
-            "Команды:\n/me — профиль\n/subjects — субъекты\n/roles — должности\n"
-            "/parties — партии\n/laws — законы\n/decrees — указы\n/news — газета\n"
-            "/apps — заявки\n/vote — голосование\n/law — внести закон (депутатам)\n"
-            "/president — панель Президента\n/duma — выборы в ГосДуму\n/admin — админка"
-        )
+        await message.answer(f"🏛 Добро пожаловать, {subject['full_name']}!\n\n/me /subjects /roles /parties /laws /decrees /news /apps /vote /law /president /duma /duma_session /admin")
         return
-    await message.answer("🏛 Добро пожаловать в ДКД!\n\nТы не в списке субъектов.\nОтправь кодовое слово для регистрации.")
+    await message.answer("🏛 Добро пожаловать в ДКД!\n\nОтправь кодовое слово.")
 
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer("📖 Команды: /me /subjects /roles /parties /laws /decrees /news /apps /vote /law /president /duma /admin")
+    await message.answer("📖 /me /subjects /roles /parties /laws /decrees /news /apps /vote /law /president /duma /duma_session /admin")
 
 
 @dp.message(Command("me"))
@@ -1221,12 +932,12 @@ async def cmd_me(message: types.Message):
     username = normalize_username(user.username)
     subject = await get_subject(user.id, username)
     if not subject:
-        await message.answer("❌ Ты не зарегистрирован.")
+        await message.answer("❌ Не зарегистрирован.")
         return
     roles = await get_subject_roles(subject["id"])
     user_party = await get_user_party(username)
     admin_mode = await is_admin_active(user.id)
-    await message.answer(build_subject_profile_text_sync(subject, roles, user_party, admin_mode))
+    await message.answer(build_subject_profile(subject, roles, user_party, admin_mode))
 
 
 @dp.message(Command("subjects"))
@@ -1243,7 +954,7 @@ async def cmd_roles(message: types.Message):
 async def cmd_parties(message: types.Message):
     parties = await get_all_parties()
     if not parties:
-        await message.answer("🎭 ПАРТИИ\n\nПока нет партий.")
+        await message.answer("🎭 ПАРТИИ\n\nПока нет.")
         return
     text = await build_parties_list_text()
     buttons = [[InlineKeyboardButton(text=f"{p['emoji']} {p['name']}", callback_data=f"party_view|{p['id']}")] for p in parties]
@@ -1256,12 +967,12 @@ async def cmd_parties(message: types.Message):
 async def cmd_laws(message: types.Message):
     laws = await get_all_laws()
     if not laws:
-        await message.answer("📜 Законов пока нет.")
+        await message.answer("📜 Законов нет.")
         return
-    status_names = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
+    sn = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
     buttons = []
     for l in laws[:15]:
-        buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} — {status_names.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
+        buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} {sn.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
     await message.answer("📜 ЗАКОНЫ", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
@@ -1269,7 +980,7 @@ async def cmd_laws(message: types.Message):
 async def cmd_decrees(message: types.Message):
     decrees = await get_all_decrees()
     if not decrees:
-        await message.answer("📢 Указов пока нет.")
+        await message.answer("📢 Указов нет.")
         return
     text = "📢 УКАЗЫ\n\n"
     for d in decrees[:20]:
@@ -1282,7 +993,7 @@ async def cmd_decrees(message: types.Message):
 async def cmd_news(message: types.Message):
     news = await get_news(20)
     if not news:
-        await message.answer("📰 Газета пустая.")
+        await message.answer("📰 Пусто.")
         return
     text = "📰 ГАЗЕТА\n\n"
     for n in news:
@@ -1297,7 +1008,7 @@ async def cmd_apps(message: types.Message):
     username = normalize_username(user.username)
     subject = await get_subject(user.id, username)
     if not subject:
-        await message.answer("❌ Ты не зарегистрирован.")
+        await message.answer("❌ Не зарегистрирован.")
         return
     async with db_pool.acquire() as conn:
         my_apps = await conn.fetch("SELECT * FROM applications WHERE author_username = $1 ORDER BY created_at DESC LIMIT 10", username)
@@ -1309,32 +1020,6 @@ async def cmd_apps(message: types.Message):
         se = {"pending": "🟡", "approved": "🟢", "rejected": "🔴"}.get(a["status"], "⚪")
         text += f"{se} #{a['id']} — {a['type']}\n"
     await message.answer(text)
-
-
-# ===== ГРАЖДАНСТВО =====
-@dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
-async def handle_text(message: types.Message):
-    user = message.from_user
-    username = normalize_username(user.username)
-    subject = await get_subject(user.id, username)
-    if subject:
-        return
-    if check_secret_word(message.text):
-        if not username:
-            await message.answer("❌ У тебя нет username в Telegram.")
-            return
-        async with db_pool.acquire() as conn:
-            president = await conn.fetchrow("""
-                SELECT s.username FROM subjects s
-                JOIN subject_roles sr ON sr.subject_id = s.id
-                JOIN roles r ON r.id = sr.role_id
-                WHERE r.code = 'president' LIMIT 1
-            """)
-        target = president["username"] if president else None
-        await create_application("citizenship", username, user.full_name, target, {"user_id": user.id})
-        await message.answer("✅ Кодовое слово принято!\n\nЗаявка на гражданство отправлена Президенту.")
-        return
-    await message.answer("❌ Неверное кодовое слово.\n\nПодсказка: два слова, связанные с Эфиопией и Богом.")
 
 
 # ===== ПАНЕЛЬ ПРЕЗИДЕНТА =====
@@ -1349,13 +1034,13 @@ async def cmd_president(message: types.Message):
         return
     term = await get_active_president_term()
     term_text = f"\nСрок до: {term['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК" if term else ""
-    await message.answer(f"━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━{term_text}\n\nВыбери действие:", reply_markup=build_president_keyboard())
+    await message.answer(f"━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━{term_text}\n\nВыбери:", reply_markup=build_president_keyboard())
 
 
 @dp.callback_query(lambda c: c.data == "pres_back")
 async def pres_back(callback: types.CallbackQuery):
     try:
-        await callback.message.edit_text("👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n\nВыбери действие:", reply_markup=build_president_keyboard())
+        await callback.message.edit_text("👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n\nВыбери:", reply_markup=build_president_keyboard())
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1369,7 +1054,7 @@ async def pres_back(callback: types.CallbackQuery):
 async def pres_decree(callback: types.CallbackQuery, state: FSMContext):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         await callback.message.answer("📢 СОЗДАНИЕ УКАЗА\n\nШаг 1/3. Отправь ЗАГОЛОВОК.")
@@ -1387,7 +1072,7 @@ async def pres_decree(callback: types.CallbackQuery, state: FSMContext):
 async def pres_apps(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         apps = await get_pending_applications(username)
@@ -1415,7 +1100,7 @@ async def pres_apps(callback: types.CallbackQuery):
 async def pres_app_view(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         app_id = int(callback.data.split("|")[1])
@@ -1432,11 +1117,7 @@ async def pres_app_view(callback: types.CallbackQuery):
         text = f"📋 ЗАЯВКА #{app_id}\n\nТип: {app['type']}\nАвтор: {app['author_username']}\n"
         if data:
             text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-        buttons = [
-            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"pres_app_approve|{app_id}")],
-            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pres_app_reject|{app_id}")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="pres_apps")],
-        ]
+        buttons = [[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"pres_app_approve|{app_id}")], [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pres_app_reject|{app_id}")], [InlineKeyboardButton(text="◀️ Назад", callback_data="pres_apps")]]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1447,53 +1128,64 @@ async def pres_app_view(callback: types.CallbackQuery):
             pass
 
 
+async def handle_app_approve(app_id, decided_by, bot):
+    app = await get_application(app_id)
+    if not app:
+        return None, "Заявка не найдена"
+    data = app["data"]
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = {}
+    if app["type"] == "citizenship":
+        user_id = data.get("user_id")
+        author = app["author_username"]
+        if author:
+            async with db_pool.acquire() as conn:
+                subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", author)
+                if not subj:
+                    await conn.execute("INSERT INTO subjects (user_id, username, full_name, is_citizen) VALUES ($1, $2, $3, TRUE) ON CONFLICT (username) DO UPDATE SET is_citizen = TRUE", user_id, author, app["author_name"] or "Новый субъект")
+                else:
+                    await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", author)
+    elif app["type"] == "create_party":
+        name = data.get("name")
+        emoji = data.get("emoji", "🎭")
+        description = data.get("description", "")
+        leader = app["author_username"]
+        if not await get_party_by_name(name):
+            await create_party(name, emoji, description, leader)
+            await add_news(f"🎭 Создана партия «{name}» {emoji}")
+            await add_reputation(leader, REP_RULES["party_created"])
+    elif app["type"] == "join_party":
+        pid = data.get("party_id")
+        if pid:
+            await add_party_member(pid, app["author_username"])
+    await approve_application(app_id, decided_by)
+    await add_reputation(app["author_username"], REP_RULES["application_approved"])
+    await notify_author(bot, app, "✅ Твоя заявка одобрена!")
+    return app, "OK"
+
+
+async def handle_app_reject(app_id, decided_by, reason, bot):
+    app = await get_application(app_id)
+    if not app:
+        return None
+    await reject_application(app_id, decided_by, reason)
+    await add_reputation(app["author_username"], REP_RULES["application_rejected"])
+    await notify_author(bot, app, f"❌ Твоя заявка отклонена.\nПричина: {reason}")
+    return app
+
+
 @dp.callback_query(lambda c: c.data.startswith("pres_app_approve|"))
 async def pres_app_approve(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        if not app:
-            await callback.answer("Не найдена.", show_alert=True)
-            return
-        data = app["data"]
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except Exception:
-                data = {}
-        if app["type"] == "citizenship":
-            user_id = data.get("user_id")
-            author = app["author_username"]
-            if author:
-                async with db_pool.acquire() as conn:
-                    subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", author)
-                    if not subj:
-                        await conn.execute("""
-                            INSERT INTO subjects (user_id, username, full_name, is_citizen)
-                            VALUES ($1, $2, $3, TRUE)
-                            ON CONFLICT (username) DO UPDATE SET is_citizen = TRUE
-                        """, user_id, author, app["author_name"] or "Новый субъект")
-                    else:
-                        await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", author)
-        elif app["type"] == "create_party":
-            name = data.get("name")
-            emoji = data.get("emoji", "🎭")
-            description = data.get("description", "")
-            leader = app["author_username"]
-            if not await get_party_by_name(name):
-                await create_party(name, emoji, description, leader)
-                await add_news(f"🎭 Создана партия «{name}» {emoji}")
-                await add_reputation(leader, REP_RULES["party_created"])
-        elif app["type"] == "join_party":
-            pid = data.get("party_id")
-            if pid:
-                await add_party_member(pid, app["author_username"])
-        await approve_application(app_id, callback.from_user.id)
-        await add_reputation(app["author_username"], REP_RULES["application_approved"])
+        await handle_app_approve(app_id, callback.from_user.id, callback.bot)
         await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.", reply_markup=build_president_keyboard())
         await callback.answer()
     except Exception as e:
@@ -1508,14 +1200,11 @@ async def pres_app_approve(callback: types.CallbackQuery):
 async def pres_app_reject(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        await reject_application(app_id, callback.from_user.id, "Отклонено Президентом")
-        if app:
-            await add_reputation(app["author_username"], REP_RULES["application_rejected"])
+        await handle_app_reject(app_id, callback.from_user.id, "Отклонено Президентом", callback.bot)
         await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.", reply_markup=build_president_keyboard())
         await callback.answer()
     except Exception as e:
@@ -1530,17 +1219,11 @@ async def pres_app_reject(callback: types.CallbackQuery):
 async def pres_ministers(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT s.full_name, s.username FROM subjects s
-                JOIN subject_roles sr ON sr.subject_id = s.id
-                JOIN roles r ON r.id = sr.role_id
-                WHERE r.code IN ('minister', 'premier', 'cbank', 'advisor')
-                ORDER BY r.id
-            """)
+            rows = await conn.fetch("SELECT s.full_name, s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code IN ('minister', 'premier', 'cbank', 'advisor') ORDER BY r.id")
         text = "⚖️ МИНИСТРЫ И ПРАВИТЕЛЬСТВО\n\n"
         if not rows:
             text += "Пока никого.\n"
@@ -1560,7 +1243,7 @@ async def pres_ministers(callback: types.CallbackQuery):
 async def pres_duma_start(callback: types.CallbackQuery, state: FSMContext):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         if await get_active_duma_election():
@@ -1581,7 +1264,7 @@ async def pres_duma_start(callback: types.CallbackQuery, state: FSMContext):
 async def pres_address(callback: types.CallbackQuery, state: FSMContext):
     try:
         username = normalize_username(callback.from_user.username)
-        if not await has_role_by_username(username, "president"):
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         await callback.message.answer("📜 Отправь текст ОБРАЩЕНИЯ.")
@@ -1594,7 +1277,10 @@ async def pres_address(callback: types.CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
+# ========== КОНЕЦ ЧАСТИ 2 ==========
+# ========== НАЧАЛО ЧАСТИ 3 ==========
 
+# ===== FSM-ОБРАБОТЧИКИ (до handle_text) =====
 @dp.message(ElectionForm.waiting_date_end)
 async def duma_date_end(message: types.Message, state: FSMContext):
     username = normalize_username(message.from_user.username)
@@ -1612,21 +1298,57 @@ async def duma_date_end(message: types.Message, state: FSMContext):
     if dt <= now_msk():
         await message.answer("❌ Дата должна быть в будущем.")
         return
-    election = await start_duma_election(dt)
+    await start_duma_election(dt)
     await add_news(f"🗳 Назначены выборы в ГосДуму! До {dt.strftime('%d.%m.%Y %H:%M')} МСК")
     await message.answer(f"✅ Выборы назначены!\n\nОкончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n\nГолосование: /duma")
     await state.clear()
 
 
-# ===== ЗАКОНЫ =====
-@dp.message(Command("law"))
-async def cmd_law(message: types.Message, state: FSMContext):
-    username = normalize_username(message.from_user.username)
-    if not await has_role_by_username(username, "deputy"):
-        await message.answer("❌ Только депутаты могут вносить законы.")
+@dp.message(DecreeForm.waiting_title)
+async def decree_title(message: types.Message, state: FSMContext):
+    title = message.text.strip() if message.text else ""
+    if len(title) < 3:
+        await message.answer("Слишком коротко.")
         return
-    await message.answer("📜 ВНЕСЕНИЕ ЗАКОНА\n\nШаг 1/2. Отправь НАЗВАНИЕ.")
-    await state.set_state(LawForm.waiting_title)
+    await state.update_data(decree_title=title)
+    await message.answer(f"Заголовок: {title}\n\nШаг 2/3. Отправь ТЕКСТ.")
+    await state.set_state(DecreeForm.waiting_text)
+
+
+@dp.message(DecreeForm.waiting_text)
+async def decree_text(message: types.Message, state: FSMContext):
+    text = message.text.strip() if message.text else ""
+    await state.update_data(decree_text=text)
+    await message.answer("Шаг 3/3. Секретный? Отправь @username или «нет».")
+    await state.set_state(DecreeForm.waiting_secret)
+
+
+@dp.message(DecreeForm.waiting_secret)
+async def decree_secret(message: types.Message, state: FSMContext):
+    answer = message.text.strip() if message.text else "нет"
+    is_secret = False
+    secret_for = None
+    if answer.lower() != "нет" and answer.startswith("@"):
+        is_secret = True
+        secret_for = normalize_username(answer)
+    data = await state.get_data()
+    title = data.get("decree_title")
+    text = data.get("decree_text")
+    username = normalize_username(message.from_user.username)
+    await create_decree(title, text, username, is_secret, secret_for)
+    if is_secret:
+        await add_news(f"🔒 Секретный указ (для {secret_for})")
+        await message.answer(f"✅ Секретный указ «{title}» создан.")
+    else:
+        await add_news(f"📢 Подписан указ: «{title}»")
+        for s in await get_all_subjects():
+            if s["user_id"] and s["user_id"] > 0:
+                try:
+                    await message.bot.send_message(s["user_id"], f"📢 УКАЗ ПРЕЗИДЕНТА\n\n{title}\n\n{text}")
+                except Exception:
+                    pass
+        await message.answer(f"✅ Указ «{title}» разослан.")
+    await state.clear()
 
 
 @dp.message(LawForm.waiting_title)
@@ -1648,10 +1370,85 @@ async def law_description(message: types.Message, state: FSMContext):
     username = normalize_username(message.from_user.username)
     law = await create_law(title, description, username)
     await add_news(f"📜 Внесён законопроект «{title}» от {username}")
-    await message.answer(f"✅ Законопроект #{law['id']} «{title}» создан!\n\nГолосование депутатов — /laws")
+    await message.answer(f"✅ Законопроект #{law['id']} «{title}» создан!\n\nГолосование — /laws")
     await state.clear()
 
 
+@dp.message(PartyForm.waiting_name)
+async def party_name(message: types.Message, state: FSMContext):
+    name = message.text.strip() if message.text else ""
+    if len(name) < 2 or len(name) > 50:
+        await message.answer("Название 2-50 символов.")
+        return
+    if await get_party_by_name(name):
+        await message.answer("Такое название уже есть.")
+        return
+    await state.update_data(party_name=name)
+    await message.answer(f"Название: {name}\n\nШаг 2/3. Отправь ЭМОДЗИ.")
+    await state.set_state(PartyForm.waiting_emoji)
+
+
+@dp.message(PartyForm.waiting_emoji)
+async def party_emoji(message: types.Message, state: FSMContext):
+    emoji = message.text.strip() if message.text else "🎭"
+    if len(emoji) > 5:
+        await message.answer("Один эмодзи.")
+        return
+    await state.update_data(party_emoji=emoji)
+    await message.answer(f"Эмодзи: {emoji}\n\nШаг 3/3. Отправь ПРОГРАММУ.")
+    await state.set_state(PartyForm.waiting_description)
+
+
+@dp.message(PartyForm.waiting_description)
+async def party_description(message: types.Message, state: FSMContext):
+    description = message.text.strip() if message.text else ""
+    data = await state.get_data()
+    name = data.get("party_name")
+    emoji = data.get("party_emoji", "🎭")
+    username = normalize_username(message.from_user.username)
+    subject = await get_subject(message.from_user.id, username)
+    async with db_pool.acquire() as conn:
+        president = await conn.fetchrow("SELECT s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'president' LIMIT 1")
+    target = president["username"] if president else None
+    await create_application("create_party", username, subject["full_name"] if subject else message.from_user.full_name, target, {"name": name, "emoji": emoji, "description": description})
+    await add_reputation(username, REP_RULES["application"])
+    await message.answer(f"✅ Заявка на партию «{name}» отправлена Президенту.")
+    await state.clear()
+
+
+@dp.message(NewsForm.waiting_text)
+async def news_text(message: types.Message, state: FSMContext):
+    text = message.text.strip() if message.text else ""
+    if len(text) < 3:
+        await message.answer("Слишком коротко.")
+        return
+    await add_news(f"📢 {text}", source="admin")
+    await message.answer("✅ Новость добавлена.")
+    await state.clear()
+
+
+# ===== КОДОВОЕ СЛОВО =====
+@dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
+async def handle_text(message: types.Message):
+    user = message.from_user
+    username = normalize_username(user.username)
+    subject = await get_subject(user.id, username)
+    if subject:
+        return
+    if check_secret_word(message.text):
+        if not username:
+            await message.answer("❌ У тебя нет username.")
+            return
+        async with db_pool.acquire() as conn:
+            president = await conn.fetchrow("SELECT s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'president' LIMIT 1")
+        target = president["username"] if president else None
+        await create_application("citizenship", username, user.full_name, target, {"user_id": user.id})
+        await message.answer("✅ Кодовое слово принято!\n\nЗаявка на гражданство отправлена Президенту.")
+        return
+    await message.answer("❌ Неверное кодовое слово.\n\nПодсказка: два слова, связанные с Эфиопией и Богом.")
+
+
+# ===== ЗАКОНЫ: просмотр и голосование =====
 @dp.callback_query(lambda c: c.data.startswith("law_view|"))
 async def law_view(callback: types.CallbackQuery):
     try:
@@ -1660,9 +1457,7 @@ async def law_view(callback: types.CallbackQuery):
         if not law:
             await callback.answer("Не найден.", show_alert=True)
             return
-        text = f"📜 ЗАКОН #{lid}\n\n«{law['title']}»\n\n{law['description']}\n\n"
-        text += f"Автор: {law['author_username']}\nСтатус: {law['status']}\n"
-        text += f"Голоса: за {law['duma_votes_for']}, против {law['duma_votes_against']}"
+        text = f"📜 ЗАКОН #{lid}\n\n«{law['title']}»\n\n{law['description']}\n\nАвтор: {law['author_username']}\nСтатус: {law['status']}\nГолоса: за {law['duma_votes_for']}, против {law['duma_votes_against']}"
         username = normalize_username(callback.from_user.username)
         buttons = []
         if law["status"] == "duma" and await has_role_by_username(username, "deputy"):
@@ -1683,10 +1478,10 @@ async def law_view(callback: types.CallbackQuery):
 async def laws_back(callback: types.CallbackQuery):
     try:
         laws = await get_all_laws()
-        status_names = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
+        sn = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
         buttons = []
         for l in laws[:15]:
-            buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} — {status_names.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
+            buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} {sn.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
         await callback.message.edit_text("📜 ЗАКОНЫ", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1719,7 +1514,69 @@ async def law_vote(callback: types.CallbackQuery):
         if voted >= total and total > 0:
             await update_law_status(lid, "government")
             await add_news(f"📜 Закон «{law['title']}» прошёл ГосДуму")
-            await callback.message.answer("✅ Все проголосовали. Закон направлен в Правительство.")
+            await callback.message.answer("✅ Все проголосовали. Закон в Правительство.")
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== ЗАКОНЫ: внесение депутатом =====
+@dp.message(Command("law"))
+async def cmd_law(message: types.Message, state: FSMContext):
+    username = normalize_username(message.from_user.username)
+    if not await has_role_by_username(username, "deputy"):
+        await message.answer("❌ Только депутаты.")
+        return
+    await message.answer("📜 ВНЕСЕНИЕ ЗАКОНА\n\nШаг 1/2. Отправь НАЗВАНИЕ.")
+    await state.set_state(LawForm.waiting_title)
+
+
+# ===== СОЗЫВ СОБРАНИЯ ГОСДУМЫ =====
+@dp.message(Command("duma_session"))
+async def cmd_duma_session(message: types.Message):
+    username = normalize_username(message.from_user.username)
+    if not await has_role_by_username(username, "deputy"):
+        await message.answer("❌ Только депутаты.")
+        return
+    laws = await get_all_laws(status="duma")
+    if not laws:
+        await message.answer("Нет законопроектов.")
+        return
+    buttons = []
+    for l in laws:
+        buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:30]}", callback_data=f"duma_session_start|{l['id']}")])
+    await message.answer("🏛 СОЗЫВ СОБРАНИЯ ГОСДУМЫ\n\nВыбери законопроект:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@dp.callback_query(lambda c: c.data.startswith("duma_session_start|"))
+async def duma_session_start(callback: types.CallbackQuery):
+    try:
+        username = normalize_username(callback.from_user.username)
+        if not await has_role_by_username(username, "deputy"):
+            await callback.answer("Только депутаты.", show_alert=True)
+            return
+        lid = int(callback.data.split("|")[1])
+        law = await get_law(lid)
+        if not law:
+            await callback.answer("Не найден.", show_alert=True)
+            return
+        deadline = now_msk() + timedelta(days=1)
+        async with db_pool.acquire() as conn:
+            deputies = await conn.fetch("SELECT s.user_id FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'deputy' AND s.user_id IS NOT NULL")
+        text = f"🏛 ПОВЕСТКА ДНЯ ГОСДУМЫ\n\nЗаконопроект #{lid}: «{law['title']}»\n\n{law['description']}\n\nАвтор: {law['author_username']}\nДедлайн: {deadline.strftime('%d.%m.%Y %H:%M')} МСК\n\nГолосуй: /laws"
+        sent = 0
+        for d in deputies:
+            try:
+                await callback.bot.send_message(d["user_id"], text)
+                sent += 1
+            except Exception as e:
+                print(f"Не смог {d['user_id']}: {e}")
+        await callback.message.edit_text(f"✅ Собрание созвано. Повестка отправлена {sent} депутатам.")
+        await add_news(f"🏛 Собрание ГосДумы: законопроект «{law['title']}»")
+        await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
         try:
@@ -1739,7 +1596,7 @@ async def cmd_duma(message: types.Message):
         return
     election = await get_active_duma_election()
     if not election:
-        await message.answer("Выборы в ГосДуму сейчас не идут.")
+        await message.answer("Выборы не идут.")
         return
     if await has_role_by_username(username, "party_leader"):
         await message.answer("⚠️ Лидеры партий не голосуют.")
@@ -1909,108 +1766,6 @@ async def party_create(callback: types.CallbackQuery, state: FSMContext):
             pass
 
 
-@dp.message(PartyForm.waiting_name)
-async def party_name(message: types.Message, state: FSMContext):
-    name = message.text.strip() if message.text else ""
-    if len(name) < 2 or len(name) > 50:
-        await message.answer("Название 2-50 символов.")
-        return
-    if await get_party_by_name(name):
-        await message.answer("Партия с таким названием уже есть.")
-        return
-    await state.update_data(party_name=name)
-    await message.answer(f"Название: {name}\n\nШаг 2/3. Отправь ЭМОДЗИ.")
-    await state.set_state(PartyForm.waiting_emoji)
-
-
-@dp.message(PartyForm.waiting_emoji)
-async def party_emoji(message: types.Message, state: FSMContext):
-    emoji = message.text.strip() if message.text else "🎭"
-    if len(emoji) > 5:
-        await message.answer("Один эмодзи.")
-        return
-    await state.update_data(party_emoji=emoji)
-    await message.answer(f"Эмодзи: {emoji}\n\nШаг 3/3. Отправь ПРОГРАММУ.")
-    await state.set_state(PartyForm.waiting_description)
-
-
-@dp.message(PartyForm.waiting_description)
-async def party_description(message: types.Message, state: FSMContext):
-    description = message.text.strip() if message.text else ""
-    data = await state.get_data()
-    name = data.get("party_name")
-    emoji = data.get("party_emoji", "🎭")
-    username = normalize_username(message.from_user.username)
-    subject = await get_subject(message.from_user.id, username)
-    async with db_pool.acquire() as conn:
-        president = await conn.fetchrow("SELECT s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'president' LIMIT 1")
-    target = president["username"] if president else None
-    await create_application("create_party", username, subject["full_name"] if subject else message.from_user.full_name, target, {"name": name, "emoji": emoji, "description": description})
-    await add_reputation(username, REP_RULES["application"])
-    await message.answer(f"✅ Заявка на партию «{name}» отправлена Президенту.")
-    await state.clear()
-
-
-# ===== УКАЗ =====
-@dp.message(DecreeForm.waiting_title)
-async def decree_title(message: types.Message, state: FSMContext):
-    title = message.text.strip() if message.text else ""
-    if len(title) < 3:
-        await message.answer("Слишком коротко.")
-        return
-    await state.update_data(decree_title=title)
-    await message.answer(f"Заголовок: {title}\n\nШаг 2/3. Отправь ТЕКСТ.")
-    await state.set_state(DecreeForm.waiting_text)
-
-
-@dp.message(DecreeForm.waiting_text)
-async def decree_text(message: types.Message, state: FSMContext):
-    text = message.text.strip() if message.text else ""
-    await state.update_data(decree_text=text)
-    await message.answer("Шаг 3/3. Секретный? Отправь @username или «нет».")
-    await state.set_state(DecreeForm.waiting_secret)
-
-
-@dp.message(DecreeForm.waiting_secret)
-async def decree_secret(message: types.Message, state: FSMContext):
-    answer = message.text.strip() if message.text else "нет"
-    is_secret = False
-    secret_for = None
-    if answer.lower() != "нет" and answer.startswith("@"):
-        is_secret = True
-        secret_for = normalize_username(answer)
-    data = await state.get_data()
-    title = data.get("decree_title")
-    text = data.get("decree_text")
-    username = normalize_username(message.from_user.username)
-    await create_decree(title, text, username, is_secret, secret_for)
-    if is_secret:
-        await add_news(f"🔒 Секретный указ (для {secret_for})")
-        await message.answer(f"✅ Секретный указ «{title}» создан.")
-    else:
-        await add_news(f"📢 Подписан указ: «{title}»")
-        subjects = await get_all_subjects()
-        for s in subjects:
-            if s["user_id"] and s["user_id"] > 0:
-                try:
-                    await message.bot.send_message(s["user_id"], f"📢 УКАЗ ПРЕЗИДЕНТА\n\n{title}\n\n{text}")
-                except Exception:
-                    pass
-        await message.answer(f"✅ Указ «{title}» разослан.")
-    await state.clear()
-
-
-@dp.message(NewsForm.waiting_text)
-async def news_text(message: types.Message, state: FSMContext):
-    text = message.text.strip() if message.text else ""
-    if len(text) < 3:
-        await message.answer("Слишком коротко.")
-        return
-    await add_news(f"📢 {text}", source="admin")
-    await message.answer("✅ Новость добавлена.")
-    await state.clear()
-
-
 # ===== АДМИН-ПАНЕЛЬ =====
 async def admin_check(callback):
     if callback.from_user.id != ADMIN_ID:
@@ -2029,7 +1784,7 @@ async def cmd_admin(message: types.Message):
         return
     active = await is_admin_active(message.from_user.id)
     status = "🔓 АКТИВЕН" if active else "🔒 НЕ АКТИВЕН"
-    await message.answer(f"🛠 АДМИН-ПАНЕЛЬ\n\nСтатус: {status}\n\nВыбери действие:", reply_markup=build_admin_keyboard(active))
+    await message.answer(f"🛠 АДМИН-ПАНЕЛЬ\n\nСтатус: {status}\n\nВыбери:", reply_markup=build_admin_keyboard(active))
 
 
 @dp.callback_query(lambda c: c.data == "admin_toggle")
@@ -2074,7 +1829,6 @@ async def admin_back(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: СУБЪЕКТЫ =====
 @dp.callback_query(lambda c: c.data == "admin_subjects")
 async def admin_subjects(callback: types.CallbackQuery):
     try:
@@ -2119,7 +1873,7 @@ async def admin_subj_view(callback: types.CallbackQuery):
             return
         roles = await get_subject_roles(subject["id"])
         user_party = await get_user_party(subject["username"])
-        await callback.message.answer(build_subject_profile_text_sync(subject, roles, user_party, False))
+        await callback.message.answer(build_subject_profile(subject, roles, user_party, False))
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2135,7 +1889,7 @@ async def admin_assign_role_subj(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         kb = await build_admin_assign_role_subj_keyboard()
-        await callback.message.edit_text("➕ ВЫДАТЬ ДОЛЖНОСТЬ\n\nВыбери субъекта:", reply_markup=kb)
+        await callback.message.edit_text("➕ ВЫДАТЬ ДОЛЖНОСТЬ\n\nВыбери:", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2230,7 +1984,7 @@ async def admin_remove_role(callback: types.CallbackQuery):
         sid = int(parts[1])
         rid = int(parts[2])
         await remove_role(sid, rid)
-        await callback.message.edit_text("✅ Должность снята.")
+        await callback.message.edit_text("✅ Снято.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2240,7 +1994,6 @@ async def admin_remove_role(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ПАРТИИ =====
 @dp.callback_query(lambda c: c.data == "admin_parties")
 async def admin_parties(callback: types.CallbackQuery):
     try:
@@ -2321,7 +2074,7 @@ async def admin_dissolve_party(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         kb = await build_admin_dissolve_party_keyboard()
-        await callback.message.edit_text("🗑 РАСПУСТИТЬ\n\nВыбери:", reply_markup=kb)
+        await callback.message.edit_text("🗑 РАСПУСТИТЬ", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2358,7 +2111,7 @@ async def admin_change_leader(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         kb = await build_admin_change_leader_keyboard()
-        await callback.message.edit_text("👑 СМЕНИТЬ ЛИДЕРА\n\nВыбери:", reply_markup=kb)
+        await callback.message.edit_text("👑 СМЕНИТЬ ЛИДЕРА", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2375,7 +2128,7 @@ async def admin_leader_party(callback: types.CallbackQuery):
             return
         pid = int(callback.data.split("|")[1])
         kb = await build_admin_leader_subject_keyboard(pid)
-        await callback.message.edit_text("👑 НОВЫЙ ЛИДЕР\n\nВыбери:", reply_markup=kb)
+        await callback.message.edit_text("👑 НОВЫЙ ЛИДЕР", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2408,7 +2161,6 @@ async def admin_leader_set(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ЗАЯВКИ =====
 @dp.callback_query(lambda c: c.data == "admin_apps")
 async def admin_apps(callback: types.CallbackQuery):
     try:
@@ -2454,11 +2206,7 @@ async def admin_app_view(callback: types.CallbackQuery):
         text = f"📋 ЗАЯВКА #{app_id}\n\nТип: {app['type']}\nАвтор: {app['author_username']}\n"
         if data:
             text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-        buttons = [
-            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")],
-            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")],
-        ]
+        buttons = [[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")], [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")]]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2475,45 +2223,7 @@ async def admin_app_approve(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        if not app:
-            await callback.answer("Не найдена.", show_alert=True)
-            return
-        data = app["data"]
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except Exception:
-                data = {}
-        if app["type"] == "citizenship":
-            user_id = data.get("user_id")
-            author = app["author_username"]
-            if author:
-                async with db_pool.acquire() as conn:
-                    subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", author)
-                    if not subj:
-                        await conn.execute("""
-                            INSERT INTO subjects (user_id, username, full_name, is_citizen)
-                            VALUES ($1, $2, $3, TRUE)
-                            ON CONFLICT (username) DO UPDATE SET is_citizen = TRUE
-                        """, user_id, author, app["author_name"] or "Новый субъект")
-                    else:
-                        await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", author)
-        elif app["type"] == "create_party":
-            name = data.get("name")
-            emoji = data.get("emoji", "🎭")
-            description = data.get("description", "")
-            leader = app["author_username"]
-            if not await get_party_by_name(name):
-                await create_party(name, emoji, description, leader)
-                await add_news(f"🎭 Создана партия «{name}» {emoji}")
-                await add_reputation(leader, REP_RULES["party_created"])
-        elif app["type"] == "join_party":
-            pid = data.get("party_id")
-            if pid:
-                await add_party_member(pid, app["author_username"])
-        await approve_application(app_id, ADMIN_ID)
-        await add_reputation(app["author_username"], REP_RULES["application_approved"])
+        await handle_app_approve(app_id, ADMIN_ID, callback.bot)
         await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
         await callback.answer()
     except Exception as e:
@@ -2530,10 +2240,7 @@ async def admin_app_reject(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        await reject_application(app_id, ADMIN_ID, "Отклонено админом")
-        if app:
-            await add_reputation(app["author_username"], REP_RULES["application_rejected"])
+        await handle_app_reject(app_id, ADMIN_ID, "Отклонено админом", callback.bot)
         await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
         await callback.answer()
     except Exception as e:
@@ -2544,7 +2251,6 @@ async def admin_app_reject(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ЗАКОНЫ =====
 @dp.callback_query(lambda c: c.data == "admin_laws")
 async def admin_laws(callback: types.CallbackQuery):
     try:
@@ -2555,10 +2261,10 @@ async def admin_laws(callback: types.CallbackQuery):
             await callback.message.edit_text("📜 Законов нет.", reply_markup=build_admin_keyboard(True))
             await callback.answer()
             return
-        status_names = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
+        sn = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
         buttons = []
         for l in laws:
-            buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} {status_names.get(l['status'], '')}", callback_data=f"admin_law_view|{l['id']}")])
+            buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} {sn.get(l['status'], '')}", callback_data=f"admin_law_view|{l['id']}")])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
         await callback.message.edit_text("📜 ЗАКОНЫ", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
@@ -2672,7 +2378,29 @@ async def admin_law_veto(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: НОВОСТИ =====
+@dp.callback_query(lambda c: c.data == "admin_decrees")
+async def admin_decrees(callback: types.CallbackQuery):
+    try:
+        if not await admin_check(callback):
+            return
+        decrees = await get_all_decrees()
+        text = "📢 УКАЗЫ\n\n"
+        for d in decrees:
+            marker = "🔒" if d["is_secret"] else "📢"
+            text += f"{marker} #{d['id']} {d['title']}\n"
+        if not decrees:
+            text += "Пусто.\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
 @dp.callback_query(lambda c: c.data == "admin_news")
 async def admin_news(callback: types.CallbackQuery):
     try:
@@ -2685,10 +2413,7 @@ async def admin_news(callback: types.CallbackQuery):
             text += f"[{dt}] {n['text']}\n\n"
         if not news:
             text += "Пусто.\n"
-        buttons = [
-            [InlineKeyboardButton(text="➕ Добавить", callback_data="admin_news_add")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
-        ]
+        buttons = [[InlineKeyboardButton(text="➕ Добавить", callback_data="admin_news_add")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2715,17 +2440,12 @@ async def admin_news_add(callback: types.CallbackQuery, state: FSMContext):
             pass
 
 
-# ===== АДМИН: ГОСДУМА =====
 @dp.callback_query(lambda c: c.data == "admin_duma")
 async def admin_duma(callback: types.CallbackQuery):
     try:
         if not await admin_check(callback):
             return
-        buttons = [
-            [InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")],
-            [InlineKeyboardButton(text="📊 Результаты", callback_data="admin_duma_results")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
-        ]
+        buttons = [[InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")], [InlineKeyboardButton(text="📊 Результаты", callback_data="admin_duma_results")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
         await callback.message.edit_text("🗳 ГОСДУМА", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2788,7 +2508,6 @@ async def admin_duma_results(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ВЫБОРЫ =====
 @dp.callback_query(lambda c: c.data == "admin_results")
 async def admin_results(callback: types.CallbackQuery):
     try:
@@ -3069,8 +2788,7 @@ async def background_watcher(bot: Bot):
                     for w in winners:
                         text += f"{w['place']}. {w['party']} ({w['votes']} голосов)\n   Депутаты: {', '.join(w['deputies'])}\n\n"
                     await add_news("🗳 Выборы в ГосДуму завершены!")
-                    subjects = await get_all_subjects()
-                    for s in subjects:
+                    for s in await get_all_subjects():
                         if s["user_id"] and s["user_id"] > 0:
                             try:
                                 await bot.send_message(s["user_id"], text)
@@ -3127,3 +2845,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# ========== КОНЕЦ ЧАСТИ 3 ==========
