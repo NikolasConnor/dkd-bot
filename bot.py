@@ -1942,15 +1942,31 @@ async def duma_vote(callback: types.CallbackQuery):
             await callback.answer(msg, show_alert=True)
             return
         party = await get_party(pid)
-        try:
-            await callback.message.edit_text(f"✅ Голос за «{party['name']}» принят!")
-        except Exception:
-            await callback.message.answer(f"✅ Голос за «{party['name']}» принят!")
-        await callback.answer()
+        subject = await get_subject(callback.from_user.id, username)
+        voter_name = subject["full_name"] if subject else username
+
+        caption = (
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "✅ ГОЛОС ПРИНЯТ!\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Субъект: {voter_name}\n"
+            f"🗳 Партия: {party['emoji']} {party['name']}"
+        )
+
+        if VIDEO_FILE_ID:
+            try:
+                await callback.message.answer_video(video=VIDEO_FILE_ID, caption=caption)
+            except Exception as e:
+                print(f"Не смог отправить видео: {e}")
+                await callback.message.answer(caption)
+        else:
+            await callback.message.answer(caption)
+
+        await callback.answer("Голос принят!")
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка duma_vote: {e}")
         try:
-            await callback.answer("Ошибка", show_alert=True)
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
         except Exception:
             pass
 
