@@ -10,7 +10,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-# ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 7934244888
@@ -101,6 +100,11 @@ class ElectionForm(StatesGroup):
     waiting_date_end = State()
 
 
+class PresAssignForm(StatesGroup):
+    waiting_subject = State()
+    waiting_role = State()
+
+
 dp = Dispatcher()
 
 
@@ -140,6 +144,29 @@ def format_delta(delta):
     if minutes and not days:
         parts.append(f"{minutes} мин.")
     return " ".join(parts) if parts else "меньше минуты"
+
+
+def parse_date_flexible(text):
+    if not text:
+        return None
+    t = text.strip().replace(".", "-").replace("/", "-").replace(",", " ")
+    formats = [
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H.%M",
+        "%d-%m-%Y %H:%M",
+        "%d-%m-%Y %H.%M",
+        "%d-%m-%y %H:%M",
+        "%Y.%m.%d %H:%M",
+        "%Y %m %d %H:%M",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(t, fmt)
+            return dt.replace(tzinfo=MSK)
+        except Exception:
+            continue
+    return None
 
 
 def is_tester(username):
@@ -626,8 +653,8 @@ async def finish_duma_election(election_id):
         await conn.execute("UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2", json.dumps(winners), election_id)
         return winners
 
-# ========== КОНЕЦ ЧАСТИ 1 ==========
-# ========== НАЧАЛО ЧАСТИ 2 ==========
+# ===== КОНЕЦ ЧАСТИ 1 =====
+# ===== НАЧАЛО ЧАСТИ 2 =====
 
 def build_subject_profile(subject, roles, user_party, admin_mode=False):
     roles_text = "\n".join([f"{r['emoji']} {r['name']}" for r in roles]) if roles else "👤 Субъект"
@@ -900,12 +927,34 @@ def build_admin_confirm_reset_keyboard():
 
 def build_president_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Указ", callback_data="pres_decree")],
-        [InlineKeyboardButton(text="📜 Обращение", callback_data="pres_address")],
+        [InlineKeyboardButton(text="📢 Создать указ", callback_data="pres_decree")],
+        [InlineKeyboardButton(text="📜 Обращение к народу", callback_data="pres_address")],
         [InlineKeyboardButton(text="📋 Заявки мне", callback_data="pres_apps")],
-        [InlineKeyboardButton(text="🗳 Назначить ГосДуму", callback_data="pres_duma_start")],
-        [InlineKeyboardButton(text="⚖️ Министры", callback_data="pres_ministers")],
+        [InlineKeyboardButton(text="🗳 Назначить выборы в ГосДуму", callback_data="pres_duma_start")],
+        [InlineKeyboardButton(text="👑 Назначить министров", callback_data="pres_ministers_manage")],
+        [InlineKeyboardButton(text="⚖️ Список правительства", callback_data="pres_ministers_list")],
+        [InlineKeyboardButton(text="🏛 Созвать собрание", callback_data="pres_duma_session")],
     ])
+
+
+async def build_pres_ministers_subject_keyboard():
+    subjects = await get_all_subjects()
+    buttons = []
+    for s in subjects:
+        buttons.append([InlineKeyboardButton(text=s['full_name'], callback_data=f"pres_ministers_pick|{s['id']}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="pres_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def build_pres_ministers_role_keyboard(subject_id):
+    roles = await get_all_roles()
+    buttons = []
+    for r in roles:
+        if r["code"] in ["president", "deputy", "subject", "party_leader"]:
+            continue
+        buttons.append([InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"pres_ministers_set|{subject_id}|{r['id']}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="pres_ministers_manage")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 @dp.message(Command("start"))
@@ -916,14 +965,60 @@ async def cmd_start(message: types.Message):
     if subject:
         if subject["user_id"] != user.id and user.id:
             await update_subject_user_id(subject["username"], user.id)
-        await message.answer(f"🏛 Добро пожаловать, {subject['full_name']}!\n\n/me /subjects /roles /parties /laws /decrees /news /apps /vote /law /president /duma /duma_session /admin")
+        roles = await get_subject_roles(subject["id"])
+        roles_short = ", ".join([r["name"] for r in roles]) if roles else "Субъект"
+        text = (
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏛 ДКДУСЛУГИ\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 {subject['full_name']}\n"
+            f"🎭 {roles_short}\n"
+            f"⭐ Репутация: {subject['reputation']}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 КОМАНДЫ:\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 /me — профиль\n"
+            f"👥 /subjects — субъекты\n"
+            f"🎭 /roles — должности\n"
+            f"🎭 /parties — партии\n"
+            f"📜 /laws — законы\n"
+            f"📢 /decrees — указы\n"
+            f"📰 /news — газета\n"
+            f"📋 /apps — мои заявки\n"
+            f"🗳 /vote — голосование\n"
+            f"👑 /president — панель Президента\n"
+            f"🏛 /duma — выборы в ГосДуму\n"
+            f"🛠 /admin — админ-панель"
+        )
+        await message.answer(text)
         return
-    await message.answer("🏛 Добро пожаловать в ДКД!\n\nОтправь кодовое слово.")
+    await message.answer(
+        "🏛 Добро пожаловать в ДКД!\n\n"
+        "Ты не в списке субъектов.\n"
+        "Чтобы зарегистрироваться, отправь КОДОВОЕ СЛОВО.\n\n"
+        "Подсказка: два слова, связанных с Эфиопией и Богом."
+    )
 
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer("📖 /me /subjects /roles /parties /laws /decrees /news /apps /vote /law /president /duma /duma_session /admin")
+    await message.answer(
+        "📖 ПОМОЩЬ\n\n"
+        "/me — профиль\n"
+        "/subjects — список субъектов\n"
+        "/roles — список должностей\n"
+        "/parties — партии\n"
+        "/laws — законы\n"
+        "/decrees — указы\n"
+        "/news — газета\n"
+        "/apps — мои заявки\n"
+        "/vote — голосование Президента\n"
+        "/law — внести закон (депутатам)\n"
+        "/president — панель Президента\n"
+        "/duma — выборы в ГосДуму\n"
+        "/duma_session — созвать собрание (депутатам)\n"
+        "/admin — админ-панель (админу)"
+    )
 
 
 @dp.message(Command("me"))
@@ -969,10 +1064,10 @@ async def cmd_laws(message: types.Message):
     if not laws:
         await message.answer("📜 Законов нет.")
         return
-    sn = {"duma": "🟡", "government": "🟠", "president": "🔵", "approved": "🟢", "vetoed": "🔴"}
+    sn = {"duma": "🟡 ГосДума", "government": "🟠 Правительство", "president": "🔵 Президент", "approved": "🟢 Принят", "vetoed": "🔴 Вето"}
     buttons = []
     for l in laws[:15]:
-        buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} {sn.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
+        buttons.append([InlineKeyboardButton(text=f"#{l['id']} {l['title'][:25]} — {sn.get(l['status'], '')}", callback_data=f"law_view|{l['id']}")])
     await message.answer("📜 ЗАКОНЫ", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
@@ -1033,14 +1128,20 @@ async def cmd_president(message: types.Message):
         await message.answer("⛔ Только Президент.")
         return
     term = await get_active_president_term()
-    term_text = f"\nСрок до: {term['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК" if term else ""
-    await message.answer(f"━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━{term_text}\n\nВыбери:", reply_markup=build_president_keyboard())
+    term_text = f"\nСрок до: {term['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК" if term else "\nСрок не установлен"
+    await message.answer(
+        f"━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━{term_text}\n\nВыбери действие:",
+        reply_markup=build_president_keyboard()
+    )
 
 
 @dp.callback_query(lambda c: c.data == "pres_back")
 async def pres_back(callback: types.CallbackQuery):
     try:
-        await callback.message.edit_text("👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n\nВыбери:", reply_markup=build_president_keyboard())
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_president_keyboard()
+        )
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1057,7 +1158,7 @@ async def pres_decree(callback: types.CallbackQuery, state: FSMContext):
         if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
-        await callback.message.answer("📢 СОЗДАНИЕ УКАЗА\n\nШаг 1/3. Отправь ЗАГОЛОВОК.")
+        await callback.message.answer("📢 СОЗДАНИЕ УКАЗА\n\nШаг 1/3. Отправь ЗАГОЛОВОК (минимум 3 символа).")
         await state.set_state(DecreeForm.waiting_title)
         await callback.answer()
     except Exception as e:
@@ -1117,7 +1218,11 @@ async def pres_app_view(callback: types.CallbackQuery):
         text = f"📋 ЗАЯВКА #{app_id}\n\nТип: {app['type']}\nАвтор: {app['author_username']}\n"
         if data:
             text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-        buttons = [[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"pres_app_approve|{app_id}")], [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pres_app_reject|{app_id}")], [InlineKeyboardButton(text="◀️ Назад", callback_data="pres_apps")]]
+        buttons = [
+            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"pres_app_approve|{app_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pres_app_reject|{app_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="pres_apps")],
+        ]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1163,7 +1268,7 @@ async def handle_app_approve(app_id, decided_by, bot):
             await add_party_member(pid, app["author_username"])
     await approve_application(app_id, decided_by)
     await add_reputation(app["author_username"], REP_RULES["application_approved"])
-    await notify_author(bot, app, "✅ Твоя заявка одобрена!")
+    await notify_author(bot, app, "✅ Твоя заявка ОДОБРЕНА!")
     return app, "OK"
 
 
@@ -1173,7 +1278,7 @@ async def handle_app_reject(app_id, decided_by, reason, bot):
         return None
     await reject_application(app_id, decided_by, reason)
     await add_reputation(app["author_username"], REP_RULES["application_rejected"])
-    await notify_author(bot, app, f"❌ Твоя заявка отклонена.\nПричина: {reason}")
+    await notify_author(bot, app, f"❌ Твоя заявка ОТКЛОНЕНА.\n\nПричина: {reason}")
     return app
 
 
@@ -1186,7 +1291,7 @@ async def pres_app_approve(callback: types.CallbackQuery):
             return
         app_id = int(callback.data.split("|")[1])
         await handle_app_approve(app_id, callback.from_user.id, callback.bot)
-        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.", reply_markup=build_president_keyboard())
+        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена. Автор уведомлён.", reply_markup=build_president_keyboard())
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1205,7 +1310,7 @@ async def pres_app_reject(callback: types.CallbackQuery):
             return
         app_id = int(callback.data.split("|")[1])
         await handle_app_reject(app_id, callback.from_user.id, "Отклонено Президентом", callback.bot)
-        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.", reply_markup=build_president_keyboard())
+        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена. Автор уведомлён.", reply_markup=build_president_keyboard())
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1215,21 +1320,103 @@ async def pres_app_reject(callback: types.CallbackQuery):
             pass
 
 
-@dp.callback_query(lambda c: c.data == "pres_ministers")
-async def pres_ministers(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "pres_ministers_list")
+async def pres_ministers_list(callback: types.CallbackQuery):
     try:
         username = normalize_username(callback.from_user.username)
         if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT s.full_name, s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code IN ('minister', 'premier', 'cbank', 'advisor') ORDER BY r.id")
-        text = "⚖️ МИНИСТРЫ И ПРАВИТЕЛЬСТВО\n\n"
+            rows = await conn.fetch("""
+                SELECT s.full_name, s.username, r.name as role_name, r.emoji
+                FROM subjects s
+                JOIN subject_roles sr ON sr.subject_id = s.id
+                JOIN roles r ON r.id = sr.role_id
+                WHERE r.code IN ('minister', 'premier', 'cbank', 'advisor')
+                ORDER BY r.id
+            """)
+        text = "⚖️ ПРАВИТЕЛЬСТВО\n\n"
         if not rows:
             text += "Пока никого.\n"
         for r in rows:
-            text += f"• {r['full_name']} ({r['username']})\n"
-        await callback.message.edit_text(text, reply_markup=build_president_keyboard())
+            text += f"{r['emoji']} {r['role_name']}: {r['full_name']}\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="pres_back")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "pres_ministers_manage")
+async def pres_ministers_manage(callback: types.CallbackQuery):
+    try:
+        username = normalize_username(callback.from_user.username)
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
+            await callback.answer("Только Президент.", show_alert=True)
+            return
+        kb = await build_pres_ministers_subject_keyboard()
+        await callback.message.edit_text(
+            "👑 НАЗНАЧЕНИЕ МИНИСТРОВ\n\nШаг 1/2. Выбери субъекта:",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("pres_ministers_pick|"))
+async def pres_ministers_pick(callback: types.CallbackQuery):
+    try:
+        username = normalize_username(callback.from_user.username)
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
+            await callback.answer("Только Президент.", show_alert=True)
+            return
+        sid = int(callback.data.split("|")[1])
+        kb = await build_pres_ministers_role_keyboard(sid)
+        await callback.message.edit_text(
+            "👑 Шаг 2/2. Выбери ДОЛЖНОСТЬ:",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("pres_ministers_set|"))
+async def pres_ministers_set(callback: types.CallbackQuery):
+    try:
+        username = normalize_username(callback.from_user.username)
+        if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
+            await callback.answer("Только Президент.", show_alert=True)
+            return
+        parts = callback.data.split("|")
+        sid = int(parts[1])
+        rid = int(parts[2])
+        ok, msg = await assign_role(sid, rid, callback.from_user.id)
+        if ok:
+            async with db_pool.acquire() as conn:
+                subject = await conn.fetchrow("SELECT * FROM subjects WHERE id = $1", sid)
+                role = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", rid)
+            await add_news(f"👑 {subject['full_name']} назначен: {role['name']}")
+            await callback.message.edit_text(
+                f"✅ {subject['full_name']} назначен на должность:\n{role['emoji']} {role['name']}",
+                reply_markup=build_president_keyboard()
+            )
+        else:
+            await callback.message.answer(f"❌ {msg}")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1249,8 +1436,33 @@ async def pres_duma_start(callback: types.CallbackQuery, state: FSMContext):
         if await get_active_duma_election():
             await callback.answer("Выборы уже идут!", show_alert=True)
             return
-        await callback.message.answer("🗳 Отправь ДАТУ окончания в формате:\n2027-01-15 20:00")
+        await callback.message.answer(
+            "🗳 НАЗНАЧЕНИЕ ВЫБОРОВ В ГОСДУМУ\n\n"
+            "Отправь ДАТУ ОКОНЧАНИЯ.\n\n"
+            "Форматы:\n"
+            "• 2027-01-15 20:00\n"
+            "• 15-01-2027 20:00\n"
+            "• 15.01.2027 20:00\n\n"
+            "Главное — дата должна быть в БУДУЩЕМ."
+        )
         await state.set_state(ElectionForm.waiting_date_end)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "pres_duma_session")
+async def pres_duma_session(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text(
+            "🏛 Собрание ГосДумы созывается ДЕПУТАТАМИ.\n\n"
+            "Команда: /duma_session",
+            reply_markup=build_president_keyboard()
+        )
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1267,7 +1479,7 @@ async def pres_address(callback: types.CallbackQuery, state: FSMContext):
         if not await has_role_by_username(username, "president") and not await is_admin_active(callback.from_user.id):
             await callback.answer("Только Президент.", show_alert=True)
             return
-        await callback.message.answer("📜 Отправь текст ОБРАЩЕНИЯ.")
+        await callback.message.answer("📜 Отправь текст ОБРАЩЕНИЯ К НАРОДУ.")
         await state.set_state(NewsForm.waiting_text)
         await callback.answer()
     except Exception as e:
@@ -1277,10 +1489,10 @@ async def pres_address(callback: types.CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
-# ========== КОНЕЦ ЧАСТИ 2 ==========
-# ========== НАЧАЛО ЧАСТИ 3 ==========
+# ===== КОНЕЦ ЧАСТИ 2 =====
+# ===== НАЧАЛО ЧАСТИ 3 =====
 
-# ===== FSM-ОБРАБОТЧИКИ (до handle_text) =====
+# ===== FSM-ОБРАБОТЧИКИ =====
 @dp.message(ElectionForm.waiting_date_end)
 async def duma_date_end(message: types.Message, state: FSMContext):
     username = normalize_username(message.from_user.username)
@@ -1290,17 +1502,25 @@ async def duma_date_end(message: types.Message, state: FSMContext):
         await message.answer("⛔ Только Президент или Админ.")
         await state.clear()
         return
-    try:
-        dt = datetime.strptime(message.text.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
-    except Exception:
-        await message.answer("❌ Неверный формат. Нужно: 2027-01-15 20:00")
+    dt = parse_date_flexible(message.text)
+    if not dt:
+        await message.answer(
+            "❌ Неверный формат.\n\n"
+            "Попробуй: 2027-01-15 20:00\n"
+            "или: 15-01-2027 20:00\n"
+            "или: 15.01.2027 20:00"
+        )
         return
     if dt <= now_msk():
-        await message.answer("❌ Дата должна быть в будущем.")
+        await message.answer(f"❌ Дата должна быть в БУДУЩЕМ.\n\nСейчас: {now_msk().strftime('%d.%m.%Y %H:%M')} МСК\nТы ввёл: {dt.strftime('%d.%m.%Y %H:%M')} МСК")
         return
     await start_duma_election(dt)
     await add_news(f"🗳 Назначены выборы в ГосДуму! До {dt.strftime('%d.%m.%Y %H:%M')} МСК")
-    await message.answer(f"✅ Выборы назначены!\n\nОкончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n\nГолосование: /duma")
+    await message.answer(
+        f"✅ ВЫБОРЫ НАЗНАЧЕНЫ!\n\n"
+        f"Окончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+        f"Голосование: /duma"
+    )
     await state.clear()
 
 
@@ -1308,16 +1528,19 @@ async def duma_date_end(message: types.Message, state: FSMContext):
 async def decree_title(message: types.Message, state: FSMContext):
     title = message.text.strip() if message.text else ""
     if len(title) < 3:
-        await message.answer("Слишком коротко.")
+        await message.answer("Слишком коротко (минимум 3 символа).")
         return
     await state.update_data(decree_title=title)
-    await message.answer(f"Заголовок: {title}\n\nШаг 2/3. Отправь ТЕКСТ.")
+    await message.answer(f"Заголовок: {title}\n\nШаг 2/3. Отправь ТЕКСТ указа.")
     await state.set_state(DecreeForm.waiting_text)
 
 
 @dp.message(DecreeForm.waiting_text)
 async def decree_text(message: types.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
+    if len(text) < 3:
+        await message.answer("Слишком коротко.")
+        return
     await state.update_data(decree_text=text)
     await message.answer("Шаг 3/3. Секретный? Отправь @username или «нет».")
     await state.set_state(DecreeForm.waiting_secret)
@@ -1338,16 +1561,18 @@ async def decree_secret(message: types.Message, state: FSMContext):
     await create_decree(title, text, username, is_secret, secret_for)
     if is_secret:
         await add_news(f"🔒 Секретный указ (для {secret_for})")
-        await message.answer(f"✅ Секретный указ «{title}» создан.")
+        await message.answer(f"✅ СЕКРЕТНЫЙ УКАЗ «{title}» создан.\nВидит только: {secret_for}")
     else:
         await add_news(f"📢 Подписан указ: «{title}»")
+        sent = 0
         for s in await get_all_subjects():
             if s["user_id"] and s["user_id"] > 0:
                 try:
                     await message.bot.send_message(s["user_id"], f"📢 УКАЗ ПРЕЗИДЕНТА\n\n{title}\n\n{text}")
+                    sent += 1
                 except Exception:
                     pass
-        await message.answer(f"✅ Указ «{title}» разослан.")
+        await message.answer(f"✅ УКАЗ «{title}» разослан {sent} субъектам.")
     await state.clear()
 
 
@@ -1355,22 +1580,25 @@ async def decree_secret(message: types.Message, state: FSMContext):
 async def law_title(message: types.Message, state: FSMContext):
     title = message.text.strip() if message.text else ""
     if len(title) < 3:
-        await message.answer("Слишком коротко.")
+        await message.answer("Слишком коротко (минимум 3 символа).")
         return
     await state.update_data(law_title=title)
-    await message.answer(f"Название: {title}\n\nШаг 2/2. Отправь ОПИСАНИЕ.")
+    await message.answer(f"Название: {title}\n\nШаг 2/2. Отправь ОПИСАНИЕ закона.")
     await state.set_state(LawForm.waiting_description)
 
 
 @dp.message(LawForm.waiting_description)
 async def law_description(message: types.Message, state: FSMContext):
     description = message.text.strip() if message.text else ""
+    if len(description) < 3:
+        await message.answer("Слишком коротко.")
+        return
     data = await state.get_data()
     title = data.get("law_title")
     username = normalize_username(message.from_user.username)
     law = await create_law(title, description, username)
     await add_news(f"📜 Внесён законопроект «{title}» от {username}")
-    await message.answer(f"✅ Законопроект #{law['id']} «{title}» создан!\n\nГолосование — /laws")
+    await message.answer(f"✅ ЗАКОНОПРОЕКТ #{law['id']} «{title}» создан!\n\nГолосование — /laws")
     await state.clear()
 
 
@@ -1378,13 +1606,13 @@ async def law_description(message: types.Message, state: FSMContext):
 async def party_name(message: types.Message, state: FSMContext):
     name = message.text.strip() if message.text else ""
     if len(name) < 2 or len(name) > 50:
-        await message.answer("Название 2-50 символов.")
+        await message.answer("Название должно быть 2-50 символов.")
         return
     if await get_party_by_name(name):
-        await message.answer("Такое название уже есть.")
+        await message.answer("Партия с таким названием уже есть. Придумай другое.")
         return
     await state.update_data(party_name=name)
-    await message.answer(f"Название: {name}\n\nШаг 2/3. Отправь ЭМОДЗИ.")
+    await message.answer(f"Название: {name}\n\nШаг 2/3. Отправь ЭМОДЗИ (1 символ).")
     await state.set_state(PartyForm.waiting_emoji)
 
 
@@ -1392,16 +1620,19 @@ async def party_name(message: types.Message, state: FSMContext):
 async def party_emoji(message: types.Message, state: FSMContext):
     emoji = message.text.strip() if message.text else "🎭"
     if len(emoji) > 5:
-        await message.answer("Один эмодзи.")
+        await message.answer("Отправь ОДИН эмодзи.")
         return
     await state.update_data(party_emoji=emoji)
-    await message.answer(f"Эмодзи: {emoji}\n\nШаг 3/3. Отправь ПРОГРАММУ.")
+    await message.answer(f"Эмодзи: {emoji}\n\nШаг 3/3. Отправь ПРОГРАММУ партии.")
     await state.set_state(PartyForm.waiting_description)
 
 
 @dp.message(PartyForm.waiting_description)
 async def party_description(message: types.Message, state: FSMContext):
     description = message.text.strip() if message.text else ""
+    if len(description) < 3:
+        await message.answer("Слишком коротко.")
+        return
     data = await state.get_data()
     name = data.get("party_name")
     emoji = data.get("party_emoji", "🎭")
@@ -1412,7 +1643,13 @@ async def party_description(message: types.Message, state: FSMContext):
     target = president["username"] if president else None
     await create_application("create_party", username, subject["full_name"] if subject else message.from_user.full_name, target, {"name": name, "emoji": emoji, "description": description})
     await add_reputation(username, REP_RULES["application"])
-    await message.answer(f"✅ Заявка на партию «{name}» отправлена Президенту.")
+    await message.answer(
+        f"✅ ЗАЯВКА НА ПАРТИЮ ОТПРАВЛЕНА!\n\n"
+        f"Название: {name}\n"
+        f"Эмодзи: {emoji}\n"
+        f"Программа: {description}\n\n"
+        f"Ожидай решения Президента."
+    )
     await state.clear()
 
 
@@ -1423,7 +1660,7 @@ async def news_text(message: types.Message, state: FSMContext):
         await message.answer("Слишком коротко.")
         return
     await add_news(f"📢 {text}", source="admin")
-    await message.answer("✅ Новость добавлена.")
+    await message.answer("✅ Новость добавлена в газету.")
     await state.clear()
 
 
@@ -1437,18 +1674,22 @@ async def handle_text(message: types.Message):
         return
     if check_secret_word(message.text):
         if not username:
-            await message.answer("❌ У тебя нет username.")
+            await message.answer("❌ У тебя нет username в Telegram. Установи username и попробуй снова.")
             return
         async with db_pool.acquire() as conn:
             president = await conn.fetchrow("SELECT s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'president' LIMIT 1")
         target = president["username"] if president else None
         await create_application("citizenship", username, user.full_name, target, {"user_id": user.id})
-        await message.answer("✅ Кодовое слово принято!\n\nЗаявка на гражданство отправлена Президенту.")
+        await message.answer(
+            "✅ КОДОВОЕ СЛОВО ПРИНЯТО!\n\n"
+            "Заявка на гражданство отправлена Президенту.\n"
+            "Ожидай одобрения."
+        )
         return
     await message.answer("❌ Неверное кодовое слово.\n\nПодсказка: два слова, связанные с Эфиопией и Богом.")
 
 
-# ===== ЗАКОНЫ: просмотр и голосование =====
+# ===== ЗАКОНЫ: просмотр =====
 @dp.callback_query(lambda c: c.data.startswith("law_view|"))
 async def law_view(callback: types.CallbackQuery):
     try:
@@ -1514,7 +1755,7 @@ async def law_vote(callback: types.CallbackQuery):
         if voted >= total and total > 0:
             await update_law_status(lid, "government")
             await add_news(f"📜 Закон «{law['title']}» прошёл ГосДуму")
-            await callback.message.answer("✅ Все проголосовали. Закон в Правительство.")
+            await callback.message.answer("✅ Все проголосовали. Закон направлен в Правительство.")
     except Exception as e:
         print(f"Ошибка: {e}")
         try:
@@ -1528,9 +1769,9 @@ async def law_vote(callback: types.CallbackQuery):
 async def cmd_law(message: types.Message, state: FSMContext):
     username = normalize_username(message.from_user.username)
     if not await has_role_by_username(username, "deputy"):
-        await message.answer("❌ Только депутаты.")
+        await message.answer("❌ Только депутаты ГосДумы могут вносить законы.")
         return
-    await message.answer("📜 ВНЕСЕНИЕ ЗАКОНА\n\nШаг 1/2. Отправь НАЗВАНИЕ.")
+    await message.answer("📜 ВНЕСЕНИЕ ЗАКОНА\n\nШаг 1/2. Отправь НАЗВАНИЕ (минимум 3 символа).")
     await state.set_state(LawForm.waiting_title)
 
 
@@ -1539,11 +1780,11 @@ async def cmd_law(message: types.Message, state: FSMContext):
 async def cmd_duma_session(message: types.Message):
     username = normalize_username(message.from_user.username)
     if not await has_role_by_username(username, "deputy"):
-        await message.answer("❌ Только депутаты.")
+        await message.answer("❌ Только депутаты ГосДумы могут созвать собрание.")
         return
     laws = await get_all_laws(status="duma")
     if not laws:
-        await message.answer("Нет законопроектов.")
+        await message.answer("Нет законопроектов на голосование.")
         return
     buttons = []
     for l in laws:
@@ -1566,7 +1807,14 @@ async def duma_session_start(callback: types.CallbackQuery):
         deadline = now_msk() + timedelta(days=1)
         async with db_pool.acquire() as conn:
             deputies = await conn.fetch("SELECT s.user_id FROM subjects s JOIN subject_roles sr ON sr.subject_id = s.id JOIN roles r ON r.id = sr.role_id WHERE r.code = 'deputy' AND s.user_id IS NOT NULL")
-        text = f"🏛 ПОВЕСТКА ДНЯ ГОСДУМЫ\n\nЗаконопроект #{lid}: «{law['title']}»\n\n{law['description']}\n\nАвтор: {law['author_username']}\nДедлайн: {deadline.strftime('%d.%m.%Y %H:%M')} МСК\n\nГолосуй: /laws"
+        text = (
+            f"🏛 ПОВЕСТКА ДНЯ ГОСДУМЫ\n\n"
+            f"Законопроект #{lid}: «{law['title']}»\n\n"
+            f"{law['description']}\n\n"
+            f"Автор: {law['author_username']}\n"
+            f"Дедлайн: {deadline.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+            f"Голосуй: /laws"
+        )
         sent = 0
         for d in deputies:
             try:
@@ -1596,17 +1844,22 @@ async def cmd_duma(message: types.Message):
         return
     election = await get_active_duma_election()
     if not election:
-        await message.answer("Выборы не идут.")
+        await message.answer("Выборы в ГосДуму сейчас не идут.")
         return
     if await has_role_by_username(username, "party_leader"):
         await message.answer("⚠️ Лидеры партий не голосуют.")
         return
     parties = await get_all_parties()
     if not parties:
-        await message.answer("Нет партий.")
+        await message.answer("Нет партий для голосования.")
         return
     buttons = [[InlineKeyboardButton(text=f"{p['emoji']} {p['name']}", callback_data=f"duma_vote|{election['id']}|{p['id']}")] for p in parties]
-    await message.answer(f"🗳 ГОЛОСОВАНИЕ В ГОСДУМУ\n\nДо: {election['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК\n\nВыбери партию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await message.answer(
+        f"🗳 ГОЛОСОВАНИЕ В ГОСДУМУ\n\n"
+        f"До: {election['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+        f"Выбери партию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
 
 
 @dp.callback_query(lambda c: c.data.startswith("duma_vote|"))
@@ -1648,9 +1901,9 @@ async def party_view(callback: types.CallbackQuery):
         user_party = await get_user_party(username)
         buttons = []
         if user_party and user_party["id"] == pid:
-            buttons.append([InlineKeyboardButton(text="🚪 Выйти", callback_data=f"party_leave|{pid}")])
+            buttons.append([InlineKeyboardButton(text="🚪 Выйти из партии", callback_data=f"party_leave|{pid}")])
         elif not user_party:
-            buttons.append([InlineKeyboardButton(text="✍️ Вступить", callback_data=f"party_join|{pid}")])
+            buttons.append([InlineKeyboardButton(text="✍️ Вступить в партию", callback_data=f"party_join|{pid}")])
         buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="party_back")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
@@ -1668,8 +1921,8 @@ async def party_back(callback: types.CallbackQuery):
         parties = await get_all_parties()
         text = await build_parties_list_text()
         buttons = [[InlineKeyboardButton(text=f"{p['emoji']} {p['name']}", callback_data=f"party_view|{p['id']}")] for p in parties]
-        buttons.append([InlineKeyboardButton(text="➕ Создать", callback_data="party_create")])
-        buttons.append([InlineKeyboardButton(text="🏆 Кладбище", callback_data="party_graveyard")])
+        buttons.append([InlineKeyboardButton(text="➕ Создать партию", callback_data="party_create")])
+        buttons.append([InlineKeyboardButton(text="🏆 Кладбище партий", callback_data="party_graveyard")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1719,7 +1972,7 @@ async def party_join(callback: types.CallbackQuery):
             return
         await create_application("join_party", username, subject["full_name"], party["leader_username"], {"party_id": pid, "party_name": party["name"]})
         await add_reputation(username, REP_RULES["application"])
-        await callback.message.answer(f"✍️ Заявка в партию «{party['name']}» отправлена лидеру.")
+        await callback.message.answer(f"✍️ Заявка на вступление в партию «{party['name']}» отправлена лидеру {party['leader_username']}.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1753,9 +2006,9 @@ async def party_create(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Только для зарегистрированных.", show_alert=True)
             return
         if await get_user_party(username):
-            await callback.answer("Ты уже в партии.", show_alert=True)
+            await callback.answer("Ты уже в партии. Сначала выйди.", show_alert=True)
             return
-        await callback.message.answer("➕ СОЗДАНИЕ ПАРТИИ\n\nШаг 1/3. Отправь НАЗВАНИЕ.")
+        await callback.message.answer("➕ СОЗДАНИЕ ПАРТИИ\n\nШаг 1/3. Отправь НАЗВАНИЕ (2-50 символов).")
         await state.set_state(PartyForm.waiting_name)
         await callback.answer()
     except Exception as e:
@@ -1772,7 +2025,7 @@ async def admin_check(callback):
         await callback.answer("Только админ.", show_alert=True)
         return False
     if not await is_admin_active(callback.from_user.id):
-        await callback.answer("🔒 Админ-режим не активен.", show_alert=True)
+        await callback.answer("🔒 Админ-режим не активен. Нажми кнопку активации.", show_alert=True)
         return False
     return True
 
@@ -1784,7 +2037,7 @@ async def cmd_admin(message: types.Message):
         return
     active = await is_admin_active(message.from_user.id)
     status = "🔓 АКТИВЕН" if active else "🔒 НЕ АКТИВЕН"
-    await message.answer(f"🛠 АДМИН-ПАНЕЛЬ\n\nСтатус: {status}\n\nВыбери:", reply_markup=build_admin_keyboard(active))
+    await message.answer(f"🛠 АДМИН-ПАНЕЛЬ\n\nСтатус: {status}\n\nВыбери действие:", reply_markup=build_admin_keyboard(active))
 
 
 @dp.callback_query(lambda c: c.data == "admin_toggle")
@@ -1889,7 +2142,7 @@ async def admin_assign_role_subj(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         kb = await build_admin_assign_role_subj_keyboard()
-        await callback.message.edit_text("➕ ВЫДАТЬ ДОЛЖНОСТЬ\n\nВыбери:", reply_markup=kb)
+        await callback.message.edit_text("➕ ВЫДАТЬ ДОЛЖНОСТЬ\n\nВыбери субъекта:", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1984,7 +2237,7 @@ async def admin_remove_role(callback: types.CallbackQuery):
         sid = int(parts[1])
         rid = int(parts[2])
         await remove_role(sid, rid)
-        await callback.message.edit_text("✅ Снято.")
+        await callback.message.edit_text("✅ Должность снята.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2032,7 +2285,7 @@ async def admin_party_graveyard(callback: types.CallbackQuery):
             return
         async with db_pool.acquire() as conn:
             dead = await conn.fetch("SELECT * FROM parties WHERE status = 'dissolved' ORDER BY id DESC")
-        text = "🏆 КЛАДБИЩЕ\n\n"
+        text = "🏆 КЛАДБИЩЕ ПАРТИЙ\n\n"
         for p in dead:
             text += f"💀 {p['emoji']} {p['name']} (RIP)\n"
         if not dead:
@@ -2074,7 +2327,7 @@ async def admin_dissolve_party(callback: types.CallbackQuery):
         if not await admin_check(callback):
             return
         kb = await build_admin_dissolve_party_keyboard()
-        await callback.message.edit_text("🗑 РАСПУСТИТЬ", reply_markup=kb)
+        await callback.message.edit_text("🗑 РАСПУСТИТЬ ПАРТИЮ", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2095,7 +2348,7 @@ async def admin_dissolve(callback: types.CallbackQuery):
         if party:
             await add_news(f"💀 Партия «{party['name']}» распущена (RIP)")
             await add_reputation(party["leader_username"], REP_RULES["party_dissolved"])
-        await callback.message.edit_text("✅ Распущена.")
+        await callback.message.edit_text("✅ Партия распущена.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2128,7 +2381,7 @@ async def admin_leader_party(callback: types.CallbackQuery):
             return
         pid = int(callback.data.split("|")[1])
         kb = await build_admin_leader_subject_keyboard(pid)
-        await callback.message.edit_text("👑 НОВЫЙ ЛИДЕР", reply_markup=kb)
+        await callback.message.edit_text("👑 НОВЫЙ ЛИДЕР\n\nВыбери субъекта:", reply_markup=kb)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2206,7 +2459,11 @@ async def admin_app_view(callback: types.CallbackQuery):
         text = f"📋 ЗАЯВКА #{app_id}\n\nТип: {app['type']}\nАвтор: {app['author_username']}\n"
         if data:
             text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-        buttons = [[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")], [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")]]
+        buttons = [
+            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")],
+        ]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2224,7 +2481,7 @@ async def admin_app_approve(callback: types.CallbackQuery):
             return
         app_id = int(callback.data.split("|")[1])
         await handle_app_approve(app_id, ADMIN_ID, callback.bot)
-        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
+        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена. Автор уведомлён.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2241,7 +2498,7 @@ async def admin_app_reject(callback: types.CallbackQuery):
             return
         app_id = int(callback.data.split("|")[1])
         await handle_app_reject(app_id, ADMIN_ID, "Отклонено админом", callback.bot)
-        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена. Автор уведомлён.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2329,7 +2586,7 @@ async def admin_law_gov_rej(callback: types.CallbackQuery):
             return
         lid = int(callback.data.split("|")[1])
         await update_law_status(lid, "vetoed")
-        await callback.message.edit_text("❌ Отклонено.")
+        await callback.message.edit_text("❌ Отклонено Правительством.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2347,9 +2604,9 @@ async def admin_law_sign(callback: types.CallbackQuery):
         lid = int(callback.data.split("|")[1])
         law = await get_law(lid)
         await update_law_status(lid, "approved")
-        await add_news(f"🟢 Закон «{law['title']}» подписан!")
+        await add_news(f"🟢 Закон «{law['title']}» подписан Президентом!")
         await add_reputation(law["author_username"], REP_RULES["law_approved"])
-        await callback.message.edit_text("✅ Подписан.")
+        await callback.message.edit_text("✅ Закон подписан.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2413,7 +2670,10 @@ async def admin_news(callback: types.CallbackQuery):
             text += f"[{dt}] {n['text']}\n\n"
         if not news:
             text += "Пусто.\n"
-        buttons = [[InlineKeyboardButton(text="➕ Добавить", callback_data="admin_news_add")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
+        buttons = [
+            [InlineKeyboardButton(text="➕ Добавить", callback_data="admin_news_add")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+        ]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2445,7 +2705,11 @@ async def admin_duma(callback: types.CallbackQuery):
     try:
         if not await admin_check(callback):
             return
-        buttons = [[InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")], [InlineKeyboardButton(text="📊 Результаты", callback_data="admin_duma_results")], [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
+        buttons = [
+            [InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")],
+            [InlineKeyboardButton(text="📊 Результаты", callback_data="admin_duma_results")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+        ]
         await callback.message.edit_text("🗳 ГОСДУМА", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -2462,9 +2726,12 @@ async def admin_duma_start(callback: types.CallbackQuery, state: FSMContext):
         if not await admin_check(callback):
             return
         if await get_active_duma_election():
-            await callback.answer("Уже идут.", show_alert=True)
+            await callback.answer("Выборы уже идут.", show_alert=True)
             return
-        await callback.message.answer("🗳 Отправь ДАТУ окончания: 2027-01-15 20:00")
+        await callback.message.answer(
+            "🗳 Отправь ДАТУ окончания.\n\n"
+            "Форматы:\n2027-01-15 20:00\n15-01-2027 20:00\n15.01.2027 20:00"
+        )
         await state.set_state(ElectionForm.waiting_date_end)
         await callback.answer()
     except Exception as e:
@@ -2482,7 +2749,7 @@ async def admin_duma_results(callback: types.CallbackQuery):
             return
         async with db_pool.acquire() as conn:
             elections = await conn.fetch("SELECT * FROM duma_elections ORDER BY id DESC LIMIT 5")
-        text = "🗳 РЕЗУЛЬТАТЫ\n\n"
+        text = "🗳 РЕЗУЛЬТАТЫ ГОСДУМЫ\n\n"
         for e in elections:
             res = e["results"]
             if isinstance(res, str):
@@ -2543,7 +2810,7 @@ async def admin_add_vote(callback: types.CallbackQuery):
     try:
         if not await admin_check(callback):
             return
-        await callback.message.edit_text("✍️ ВНЕСТИ ГОЛОС", reply_markup=build_admin_add_vote_keyboard())
+        await callback.message.edit_text("✍️ ВНЕСТИ ГОЛОС\n\nЗа кого?", reply_markup=build_admin_add_vote_keyboard())
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2601,7 +2868,7 @@ async def admin_reset_confirm(callback: types.CallbackQuery):
     try:
         if not await admin_check(callback):
             return
-        await callback.message.edit_text("⚠️ СБРОСИТЬ?", reply_markup=build_admin_confirm_reset_keyboard())
+        await callback.message.edit_text("⚠️ СБРОСИТЬ ВСЕ ГОЛОСА?", reply_markup=build_admin_confirm_reset_keyboard())
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2648,7 +2915,7 @@ async def cmd_vote(message: types.Message):
             if already_voted:
                 await message.answer("⚠️ Ты уже голосовал.")
                 return
-        prefix = "🧪 ТЕСТ\n\n" if tester else ""
+        prefix = "🧪 ТЕСТОВЫЙ РЕЖИМ\n\n" if tester else ""
         await message.answer(prefix + build_ballot_text(), reply_markup=build_ballot_keyboard())
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -2805,7 +3072,7 @@ async def background_watcher(bot: Bot):
                         role = await conn.fetchrow("SELECT id FROM roles WHERE code = 'president'")
                         if role:
                             await conn.execute("DELETE FROM subject_roles WHERE role_id = $1", role["id"])
-                    await add_news("👑 Срок Президента истёк.")
+                    await add_news("👑 Срок Президента истёк. Нужны новые выборы.")
                     try:
                         await bot.send_message(ADMIN_ID, "👑 Срок Президента истёк. Нужны новые выборы.")
                     except Exception:
@@ -2846,4 +3113,4 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-# ========== КОНЕЦ ЧАСТИ 3 ==========
+# ===== КОНЕЦ ЧАСТИ 3 =====
