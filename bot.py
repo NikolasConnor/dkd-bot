@@ -1150,7 +1150,7 @@ async def cmd_president(message: types.Message):
         await message.answer("⛔ Только Президент или Админ.")
         return
     term = await get_active_president_term()
-    term_text = f"\nСрок до: {term['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК" if term else "\nСрок не установлен"
+    term_text = f"\nСрок до: {from_db_dt(term['ends_at']).strftime('%d.%m.%Y %H:%M')} МСК" if term and term['ends_at'] else "\nСрок не установлен"
     await message.answer(
         f"━━━━━━━━━━━━━━━━━━━━━\n👑 ПАНЕЛЬ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━{term_text}\n\nВыбери действие:",
         reply_markup=build_president_keyboard()
@@ -1921,7 +1921,7 @@ async def cmd_duma(message: types.Message):
     buttons = [[InlineKeyboardButton(text=f"{p['emoji']} {p['name']}", callback_data=f"duma_vote|{election['id']}|{p['id']}")] for p in parties]
     await message.answer(
         f"🗳 ГОЛОСОВАНИЕ В ГОСДУМУ\n\n"
-        f"До: {election['ends_at'].strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+        f"До: {from_db_dt(election['ends_at']).strftime('%d.%m.%Y %H:%M')} МСК\n\n"
         f"Выбери партию:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
