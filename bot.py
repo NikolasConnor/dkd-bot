@@ -113,6 +113,20 @@ def normalize_username(username):
 
 def now_msk():
     return datetime.now(MSK)
+def to_db_dt(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(MSK).replace(tzinfo=None)
+    return dt
+
+
+def from_db_dt(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=MSK)
+    return dt
 
 
 def get_election_status():
@@ -531,7 +545,7 @@ async def notify_author(bot, app, status_text):
 
 
 async def create_law(title, description, author_username):
-    deadline = now_msk() + timedelta(days=1)
+    deadline = to_db_dt(now_msk() + timedelta(days=1))
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO laws (title, description, author_username, status, deadline) VALUES ($1, $2, $3, 'duma', $4)", title, description, normalize_username(author_username), deadline)
         return await conn.fetchrow("SELECT * FROM laws ORDER BY id DESC LIMIT 1")
@@ -596,8 +610,7 @@ async def get_active_president_term():
 async def start_president_term(username, ends_at):
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE president_term SET status = 'finished' WHERE status = 'active'")
-        await conn.execute("INSERT INTO president_term (username, ends_at, status) VALUES ($1, $2, 'active')", normalize_username(username), ends_at)
-
+        await conn.execute("INSERT INTO president_term (username, ends_at, status) VALUES ($1, $2, 'active')", normalize_username(username), to_db_dt(ends_at))
 
 async def end_president_term():
     async with db_pool.acquire() as conn:
@@ -616,9 +629,8 @@ async def force_finish_president():
 
 async def start_duma_election(ends_at):
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO duma_elections (ends_at, status) VALUES ($1, 'active')", ends_at)
+        await conn.execute("INSERT INTO duma_elections (ends_at, status) VALUES ($1, 'active')", to_db_dt(ends_at))
         return await conn.fetchrow("SELECT * FROM duma_elections ORDER BY id DESC LIMIT 1")
-
 
 async def get_active_duma_election():
     async with db_pool.acquire() as conn:
@@ -1532,36 +1544,40 @@ async def pres_address(callback: types.CallbackQuery, state: FSMContext):
 # ===== FSM-ОБРАБОТЧИКИ (до handle_text!) =====
 @dp.message(ElectionForm.waiting_date_end)
 async def duma_date_end(message: types.Message, state: FSMContext):
-    username = normalize_username(message.from_user.username)
-    if not await can_use_pres_panel(message.from_user.id, username):
-        await message.answer("⛔ Только Президент или Админ.")
+    try:
+        username = normalize_username(message.from_user.username)
+        if not await can_use_pres_panel(message.from_user.id, username):
+            await message.answer("⛔ Только Президент или Админ.")
+            await state.clear()
+            return
+        dt = parse_date_flexible(message.text)
+        if not dt:
+            await message.answer(
+                "❌ Неверный формат.\n\n"
+                "Попробуй: 2027-01-15 20:00\n"
+                "или: 15-01-2027 20:00\n"
+                "или: 15.01.2027 20:00"
+            )
+            return
+        if dt <= now_msk():
+            await message.answer(
+                f"❌ Дата должна быть в БУДУЩЕМ.\n\n"
+                f"Сейчас: {now_msk().strftime('%d.%m.%Y %H:%M')} МСК\n"
+                f"Ты ввёл: {dt.strftime('%d.%m.%Y %H:%M')} МСК"
+            )
+            return
+        await start_duma_election(dt)
+        await add_news(f"🗳 Назначены выборы в ГосДуму! До {dt.strftime('%d.%m.%Y %H:%M')} МСК")
+        await message.answer(
+            f"✅ ВЫБОРЫ НАЗНАЧЕНЫ!\n\n"
+            f"Окончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
+            f"Голосование: /duma"
+        )
         await state.clear()
-        return
-    dt = parse_date_flexible(message.text)
-    if not dt:
-        await message.answer(
-            "❌ Неверный формат.\n\n"
-            "Попробуй: 2027-01-15 20:00\n"
-            "или: 15-01-2027 20:00\n"
-            "или: 15.01.2027 20:00"
-        )
-        return
-    if dt <= now_msk():
-        await message.answer(
-            f"❌ Дата должна быть в БУДУЩЕМ.\n\n"
-            f"Сейчас: {now_msk().strftime('%d.%m.%Y %H:%M')} МСК\n"
-            f"Ты ввёл: {dt.strftime('%d.%m.%Y %H:%M')} МСК"
-        )
-        return
-    await start_duma_election(dt)
-    await add_news(f"🗳 Назначены выборы в ГосДуму! До {dt.strftime('%d.%m.%Y %H:%M')} МСК")
-    await message.answer(
-        f"✅ ВЫБОРЫ НАЗНАЧЕНЫ!\n\n"
-        f"Окончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
-        f"Голосование: /duma"
-    )
-    await state.clear()
-
+    except Exception as e:
+        print(f"Ошибка duma_date_end: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
+        await state.clear()
 
 @dp.message(DecreeForm.waiting_title)
 async def decree_title(message: types.Message, state: FSMContext):
@@ -3281,8 +3297,8 @@ async def background_watcher(bot: Bot):
                 flags["election_end_notified"] = True
 
             try:
-                active_e = await get_active_duma_election()
-                if active_e and active_e["ends_at"] and now_msk() >= active_e["ends_at"]:
+                    active_e = await get_active_duma_election()
+            if active_e and active_e["ends_at"] and now_msk() >= from_db_dt(active_e["ends_at"]):
                     winners = await finish_duma_election(active_e["id"])
                     text = "🗳 ВЫБОРЫ В ГОСДУМУ ЗАВЕРШЕНЫ!\n\n"
                     for w in winners:
@@ -3298,9 +3314,9 @@ async def background_watcher(bot: Bot):
                 print(f"duma watcher: {e}")
 
             try:
-                term = await get_active_president_term()
-                if term and term["ends_at"] and now_msk() >= term["ends_at"]:
-                    await force_finish_president()
+    term = await get_active_president_term()
+    if term and term["ends_at"] and now_msk() >= from_db_dt(term["ends_at"]):
+        await force_finish_president()
                     try:
                         await bot.send_message(ADMIN_ID, "👑 Срок Президента истёк. Нужны новые выборы.")
                     except Exception:
