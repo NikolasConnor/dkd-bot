@@ -75,7 +75,6 @@ INITIAL_ROLES = [
     {"username": "@Nikolas_Connor", "role_code": "premier"},
 ]
 
-# ===== ТЕСТОВЫЕ ПАРТИИ =====
 PARTIES_INITIAL = [
     {"name": "Шашлык", "emoji": "🍖", "description": "За встречи на природе и мясо.", "leader_username": "@Bloha_71"},
     {"name": "Диван", "emoji": "🛋", "description": "За домашние посиделки и уют.", "leader_username": "@Cakcer_12"},
@@ -230,7 +229,6 @@ async def init_db():
                 UNIQUE(subject_id, role_id)
             )
         """)
-        # Партии
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS parties (
                 id SERIAL PRIMARY KEY,
@@ -251,7 +249,6 @@ async def init_db():
                 joined_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # Заявки
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS applications (
                 id SERIAL PRIMARY KEY,
@@ -267,7 +264,6 @@ async def init_db():
                 reason TEXT
             )
         """)
-        # Админ-сессии
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS admin_sessions (
                 user_id BIGINT PRIMARY KEY,
@@ -364,69 +360,51 @@ async def preload_votes():
         print(f"Предзаписанные голоса: {len(PRELOADED_VOTES)}")
 
 
-# ===== ПРОВЕРКА ПРАВ =====
-async def get_subject(user_id, username):
+# ===== РАБОТА С ГОЛОСАМИ =====
+async def save_vote(user_id, username, voter_name, candidate_id, added_by_admin=False):
     username = normalize_username(username)
-    if username:
-        s = await get_subject_by_username(username)
-        if s:
-            return s
-    if user_id:
-        return await get_subject_by_user_id(user_id)
-    return None
-
-
-async def has_role(user_id, role_code):
-    if not user_id:
-        return False
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT 1 FROM subjects s
-            JOIN subject_roles sr ON sr.subject_id = s.id
-            JOIN roles r ON r.id = sr.role_id
-            WHERE s.user_id = $1 AND r.code = $2
-        """, user_id, role_code)
+        await conn.execute("""
+            INSERT INTO votes (user_id, username, voter_name, candidate_id, added_by_admin)
+            VALUES ($1, $2, $3, $4, $5)
+        """, user_id, username, voter_name, candidate_id, added_by_admin)
+
+
+async def get_all_votes():
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM votes ORDER BY voted_at")
+
+
+async def user_has_voted(user_id):
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM votes WHERE user_id = $1", user_id)
         return row is not None
 
 
-async def has_role_by_username(username, role_code):
+async def username_has_voted(username):
     username = normalize_username(username)
     if not username:
         return False
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT 1 FROM subjects s
-            JOIN subject_roles sr ON sr.subject_id = s.id
-            JOIN roles r ON r.id = sr.role_id
-            WHERE s.username = $1 AND r.code = $2
-        """, username, role_code)
+        row = await conn.fetchrow("SELECT id FROM votes WHERE username = $1", username)
         return row is not None
 
 
-async def is_admin_active(user_id):
-    if user_id != ADMIN_ID:
-        return False
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT is_active FROM admin_sessions WHERE user_id = $1", user_id)
-        return row and row["is_active"]
-
-
-async def is_president(user_id):
-    return await has_role(user_id, "president")
-
-
-async def is_party_leader(username, party_id):
+async def delete_vote_by_username(username):
     username = normalize_username(username)
     if not username:
-        return False
+        return
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT 1 FROM parties WHERE id = $1 AND leader_username = $2
-        """, party_id, username)
-        return row is not None
+        await conn.execute("DELETE FROM votes WHERE username = $1", username)
 
 
-# ===== ПРЕДЗАПИСАННЫЕ ДАННЫЕ =====
+async def clear_votes():
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM votes")
+        await conn.execute("DELETE FROM service_flags WHERE key = 'preloaded_votes'")
+
+
+# ===== СУБЪЕКТЫ =====
 async def get_subject_by_user_id(user_id):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM subjects WHERE user_id = $1", user_id)
@@ -615,7 +593,6 @@ async def reject_application(app_id, decided_by, reason):
 
 
 async def transfer_applications(old_target, new_target):
-    """При смене руководителя — заявки переходят новому."""
     old_target = normalize_username(old_target)
     new_target = normalize_username(new_target)
     if not old_target or not new_target:
@@ -627,7 +604,39 @@ async def transfer_applications(old_target, new_target):
         """, new_target, old_target)
 
 
-# ===== АДМИН-СЕССИИ =====
+# ===== ПРОВЕРКА ПРАВ =====
+async def get_subject(user_id, username):
+    username = normalize_username(username)
+    if username:
+        s = await get_subject_by_username(username)
+        if s:
+            return s
+    if user_id:
+        return await get_subject_by_user_id(user_id)
+    return None
+
+
+async def has_role(user_id, role_code):
+    if not user_id:
+        return False
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT 1 FROM subjects s
+            JOIN subject_roles sr ON sr.subject_id = s.id
+            JOIN roles r ON r.id = sr.role_id
+            WHERE s.user_id = $1 AND r.code = $2
+        """, user_id, role_code)
+        return row is not None
+
+
+async def is_admin_active(user_id):
+    if user_id != ADMIN_ID:
+        return False
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT is_active FROM admin_sessions WHERE user_id = $1", user_id)
+        return row and row["is_active"]
+
+
 async def activate_admin(user_id):
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -639,9 +648,7 @@ async def activate_admin(user_id):
 
 async def deactivate_admin(user_id):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE admin_sessions SET is_active = FALSE WHERE user_id = $1
-        """, user_id)
+        await conn.execute("UPDATE admin_sessions SET is_active = FALSE WHERE user_id = $1", user_id)
 
 
 # ===== ТЕКСТЫ =====
@@ -1028,7 +1035,6 @@ def build_admin_confirm_reset_keyboard():
 async def cmd_start(message: types.Message):
     user = message.from_user
     username = normalize_username(user.username)
-
     subject = await get_subject(user.id, username)
 
     if subject:
@@ -1046,10 +1052,8 @@ async def cmd_start(message: types.Message):
             "/help — помощь"
         )
         return
-
     await message.answer(
-        "🏛 Добро пожаловать в ДКД!\n\n"
-        "Ты не в списке субъектов.\n"
+        "🏛 Добро пожаловать в ДКД!\n\nТы не в списке субъектов.\n"
         "Чтобы зарегистрироваться, отправь кодовое слово."
     )
 
@@ -1057,8 +1061,7 @@ async def cmd_start(message: types.Message):
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
-        "📖 Помощь\n\n"
-        "/me — профиль\n/subjects — субъекты\n/roles — должности\n"
+        "📖 Помощь\n\n/me — профиль\n/subjects — субъекты\n/roles — должности\n"
         "/parties — партии\n/apps — мои заявки\n/vote — голосование\n\n"
         "Кодовое слово для регистрации — два слова, связанные с Эфиопией и Богом."
     )
@@ -1116,16 +1119,13 @@ async def cmd_apps(message: types.Message):
     if not subject:
         await message.answer("❌ Ты не зарегистрирован.")
         return
-
     async with db_pool.acquire() as conn:
         my_apps = await conn.fetch("""
             SELECT * FROM applications WHERE author_username = $1 ORDER BY created_at DESC LIMIT 10
         """, username)
-
     if not my_apps:
         await message.answer("📋 У тебя пока нет заявок.")
         return
-
     text = "━━━━━━━━━━━━━━━━━━━━━\n📋 МОИ ЗАЯВКИ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     for a in my_apps:
         status_emoji = {"pending": "🟡", "approved": "🟢", "rejected": "🔴"}.get(a["status"], "⚪")
@@ -1136,12 +1136,11 @@ async def cmd_apps(message: types.Message):
     await message.answer(text)
 
 
-# ===== ОБРАБОТКА ТЕКСТА (кодовое слово) =====
+# ===== КОДОВОЕ СЛОВО =====
 @dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
 async def handle_text(message: types.Message):
     user = message.from_user
     username = normalize_username(user.username)
-
     subject = await get_subject(user.id, username)
     if subject:
         return
@@ -1150,10 +1149,6 @@ async def handle_text(message: types.Message):
         if not username:
             await message.answer("❌ У тебя нет username в Telegram. Установи username и попробуй снова.")
             return
-
-        # Заявка на гражданство → Президенту
-        # Находим Президента
-        president = None
         async with db_pool.acquire() as conn:
             president = await conn.fetchrow("""
                 SELECT s.* FROM subjects s
@@ -1162,7 +1157,6 @@ async def handle_text(message: types.Message):
                 WHERE r.code = 'president'
                 LIMIT 1
             """)
-
         target = president["username"] if president else None
 
         await create_application(
@@ -1172,19 +1166,12 @@ async def handle_text(message: types.Message):
             target_username=target,
             data={"user_id": user.id, "telegram_name": user.full_name}
         )
-
         await message.answer(
-            "✅ Кодовое слово принято!\n\n"
-            "Заявка на гражданство отправлена Президенту.\n"
-            "Ожидай одобрения.\n\n"
-            "Пока можешь пользоваться:\n"
-            "/me — профиль (после одобрения)"
+            "✅ Кодовое слово принято!\n\nЗаявка на гражданство отправлена Президенту.\nОжидай одобрения."
         )
         return
-
     await message.answer(
-        "❌ Неверное кодовое слово.\n\n"
-        "Попробуй снова. Подсказка: два слова, связанные с Эфиопией и Богом."
+        "❌ Неверное кодовое слово.\n\nПопробуй снова. Подсказка: два слова, связанные с Эфиопией и Богом."
     )
 
 
@@ -1248,23 +1235,18 @@ async def party_join(callback: types.CallbackQuery):
         pid = int(callback.data.split("|")[1])
         user = callback.from_user
         username = normalize_username(user.username)
-
         subject = await get_subject(user.id, username)
         if not subject:
             await callback.answer("Только для зарегистрированных.", show_alert=True)
             return
-
         user_party = await get_user_party(username)
         if user_party:
             await callback.answer("Ты уже в партии.", show_alert=True)
             return
-
         party = await get_party(pid)
         if not party:
             await callback.answer("Партия не найдена.", show_alert=True)
             return
-
-        # Заявка Лидеру партии
         await create_application(
             app_type="join_party",
             author_username=username,
@@ -1272,10 +1254,8 @@ async def party_join(callback: types.CallbackQuery):
             target_username=party["leader_username"],
             data={"party_id": pid, "party_name": party["name"]}
         )
-
         await callback.message.answer(
-            f"✍️ Заявка на вступление в партию «{party['name']}» отправлена лидеру.\n"
-            "Ожидай одобрения."
+            f"✍️ Заявка на вступление в партию «{party['name']}» отправлена лидеру.\nОжидай одобрения."
         )
         await callback.answer()
     except Exception as e:
@@ -1311,22 +1291,13 @@ async def party_create(callback: types.CallbackQuery):
         if not subject:
             await callback.answer("Только для зарегистрированных.", show_alert=True)
             return
-
         user_party = await get_user_party(username)
         if user_party:
             await callback.answer("Ты уже в партии. Сначала выйди.", show_alert=True)
             return
-
         await callback.message.answer(
-            "➕ СОЗДАНИЕ ПАРТИИ\n\n"
-            "Отправь одним сообщением:\n"
-            "1. Название\n"
-            "2. Эмодзи (1 символ)\n"
-            "3. Программу (коротко)\n\n"
-            "Пример:\n"
-            "Шашлык\n"
-            "🍖\n"
-            "За встречи на природе."
+            "➕ СОЗДАНИЕ ПАРТИИ\n\nОтправь одним сообщением:\n1. Название\n2. Эмодзи (1 символ)\n3. Программу\n\n"
+            "Пример:\nШашлык\n🍖\nЗа встречи на природе."
         )
         await callback.answer()
     except Exception as e:
@@ -1347,8 +1318,7 @@ async def cmd_admin(message: types.Message):
     status = "🔓 АКТИВЕН" if active else "🔒 НЕ АКТИВЕН (ты обычный пользователь)"
     await message.answer(
         f"━━━━━━━━━━━━━━━━━━━━━\n🛠 АДМИН-ПАНЕЛЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Статус: {status}\n\n"
-        "Выбери действие:",
+        f"Статус: {status}\n\nВыбери действие:",
         reply_markup=build_admin_keyboard(active)
     )
 
@@ -1401,10 +1371,6 @@ async def admin_back(callback: types.CallbackQuery):
             await callback.answer("Ошибка", show_alert=True)
         except Exception:
             pass
-
-
-def admin_required(callback):
-    return callback.from_user.id == ADMIN_ID
 
 
 async def admin_check_and_active(callback):
@@ -1605,7 +1571,6 @@ async def admin_remove_role(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ДОЛЖНОСТИ =====
 @dp.callback_query(lambda c: c.data == "admin_roles")
 async def admin_roles(callback: types.CallbackQuery):
     try:
@@ -1688,11 +1653,9 @@ async def admin_create_party(callback: types.CallbackQuery):
         if not await admin_check_and_active(callback):
             return
         await callback.message.answer(
-            "➕ СОЗДАНИЕ ПАРТИИ (админ)\n\n"
-            "Отправь команду:\n"
-            "/make_party НАЗВАНИЕ | ЭМОДЗИ | ЛИДЕР_USERNAME | ОПИСАНИЕ\n\n"
-            "Пример:\n"
-            "/make_party Шашлык | 🍖 | @Bloha_71 | За встречи на природе"
+            "➕ СОЗДАНИЕ ПАРТИИ (админ)\n\nОтправь команду:\n"
+            "/make_party НАЗВАНИЕ | ЭМОДЗИ | @лидер | ОПИСАНИЕ\n\n"
+            "Пример:\n/make_party Шашлык | 🍖 | @Bloha_71 | За встречи на природе"
         )
         await callback.answer()
     except Exception as e:
@@ -1786,16 +1749,11 @@ async def admin_leader_set(callback: types.CallbackQuery):
         parts = callback.data.split("|")
         pid = int(parts[1])
         new_leader = parts[2]
-
         party = await get_party(pid)
         old_leader = party["leader_username"] if party else None
-
         await change_party_leader(pid, new_leader)
-
-        # Передаём заявки
         if old_leader and old_leader != new_leader:
             await transfer_applications(old_leader, new_leader)
-
         await callback.message.edit_text(f"✅ Новый лидер: {new_leader}")
         await callback.answer()
     except Exception as e:
@@ -1848,21 +1806,18 @@ async def admin_app_view(callback: types.CallbackQuery):
         if not app:
             await callback.answer("Не найдена.", show_alert=True)
             return
-
         data = app["data"]
         if isinstance(data, str):
             try:
                 data = json.loads(data)
             except Exception:
                 data = {}
-
         text = f"━━━━━━━━━━━━━━━━━━━━━\n📋 ЗАЯВКА #{app_id}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
         text += f"Тип: {app['type']}\n"
         text += f"Автор: {app['author_username']}\n"
         text += f"Адресат: {app['target_username']}\n"
         if data:
             text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-
         buttons = [
             [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")],
             [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")],
@@ -1888,15 +1843,12 @@ async def admin_app_approve(callback: types.CallbackQuery):
         if not app:
             await callback.answer("Не найдена.", show_alert=True)
             return
-
         data = app["data"]
         if isinstance(data, str):
             try:
                 data = json.loads(data)
             except Exception:
                 data = {}
-
-        # Обработка по типу
         if app["type"] == "citizenship":
             user_id = data.get("user_id")
             username = app["author_username"]
@@ -1904,7 +1856,6 @@ async def admin_app_approve(callback: types.CallbackQuery):
                 async with db_pool.acquire() as conn:
                     subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", username)
                     if not subj:
-                        # Создаём субъекта
                         await conn.execute("""
                             INSERT INTO subjects (user_id, username, full_name, is_citizen)
                             VALUES ($1, $2, $3, TRUE)
@@ -1912,7 +1863,6 @@ async def admin_app_approve(callback: types.CallbackQuery):
                         """, user_id, username, app["author_name"] or "Новый субъект")
                     else:
                         await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", username)
-
         elif app["type"] == "create_party":
             name = data.get("name")
             emoji = data.get("emoji", "🎭")
@@ -1921,12 +1871,10 @@ async def admin_app_approve(callback: types.CallbackQuery):
             existing = await get_party_by_name(name)
             if not existing:
                 await create_party(name, emoji, description, leader)
-
         elif app["type"] == "join_party":
             pid = data.get("party_id")
             if pid:
                 await add_party_member(pid, app["author_username"])
-
         await approve_application(app_id, ADMIN_ID)
         await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
         await callback.answer()
@@ -1955,7 +1903,6 @@ async def admin_app_reject(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ГРАЖДАНСТВО =====
 @dp.callback_query(lambda c: c.data == "admin_citizen")
 async def admin_citizen(callback: types.CallbackQuery):
     try:
@@ -2181,7 +2128,6 @@ async def admin_reset_yes(callback: types.CallbackQuery):
             pass
 
 
-# ===== КОМАНДА MAKE_PARTY =====
 @dp.message(Command("make_party"))
 async def cmd_make_party(message: types.Message):
     if not await is_admin_active(message.from_user.id):
