@@ -83,6 +83,19 @@ PARTIES_INITIAL = [
     {"name": "Хаос", "emoji": "🎲", "description": "За спонтанность и движ.", "leader_username": "@Nikolas_Connor"},
 ]
 
+# Репутация: правила
+REP_RULES = {
+    "vote": 1,              # проголосовал
+    "application": 2,       # подал заявку
+    "application_approved": 5,  # заявка одобрена
+    "application_rejected": -2,  # заявка отклонена
+    "law_approved": 10,     # закон принят
+    "law_rejected": -3,     # закон отклонён
+    "party_created": 15,    # создал партию
+    "party_dissolved": -10, # партия распущена
+    "overdue": -5,          # просрочка заявки
+}
+
 db_pool = None
 flags = {"test_end_notified": False, "election_end_notified": False}
 # =============================================
@@ -92,6 +105,26 @@ class PartyForm(StatesGroup):
     waiting_name = State()
     waiting_emoji = State()
     waiting_description = State()
+
+
+class LawForm(StatesGroup):
+    waiting_title = State()
+    waiting_description = State()
+
+
+class DecreeForm(StatesGroup):
+    waiting_title = State()
+    waiting_text = State()
+    waiting_secret = State()
+
+
+class NewsForm(StatesGroup):
+    waiting_text = State()
+
+
+class ElectionForm(StatesGroup):
+    waiting_date_start = State()
+    waiting_date_end = State()
 
 
 dp = Dispatcher()
@@ -194,9 +227,7 @@ async def init_db():
                 added_by_admin BOOLEAN DEFAULT FALSE
             )
         """)
-        await conn.execute("""
-            ALTER TABLE votes ADD COLUMN IF NOT EXISTS added_by_admin BOOLEAN DEFAULT FALSE
-        """)
+        await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS added_by_admin BOOLEAN DEFAULT FALSE")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS service_flags (
                 key TEXT PRIMARY KEY,
@@ -277,6 +308,81 @@ async def init_db():
                 activated_at TIMESTAMP
             )
         """)
+        # Законы
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS laws (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                author_username TEXT,
+                status TEXT DEFAULT 'duma',  -- duma / government / president / approved / vetoed
+                duma_votes_for INTEGER DEFAULT 0,
+                duma_votes_against INTEGER DEFAULT 0,
+                gov_approved BOOLEAN DEFAULT FALSE,
+                president_signed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS law_votes (
+                id SERIAL PRIMARY KEY,
+                law_id INTEGER REFERENCES laws(id) ON DELETE CASCADE,
+                voter_username TEXT NOT NULL,
+                vote TEXT NOT NULL,  -- for / against
+                voted_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(law_id, voter_username)
+            )
+        """)
+        # Указы
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS decrees (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                text TEXT,
+                author_username TEXT,
+                is_secret BOOLEAN DEFAULT FALSE,
+                secret_for TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # Газета
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS news (
+                id SERIAL PRIMARY KEY,
+                text TEXT NOT NULL,
+                source TEXT DEFAULT 'auto',  -- auto / admin / president
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # ГосДума (выборы)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS duma_elections (
+                id SERIAL PRIMARY KEY,
+                started_at TIMESTAMP DEFAULT NOW(),
+                ends_at TIMESTAMP,
+                status TEXT DEFAULT 'active',  -- active / finished
+                results JSONB DEFAULT '{}'
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS duma_candidates (
+                id SERIAL PRIMARY KEY,
+                election_id INTEGER REFERENCES duma_elections(id) ON DELETE CASCADE,
+                username TEXT NOT NULL,
+                party_name TEXT,
+                UNIQUE(election_id, username)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS duma_votes (
+                id SERIAL PRIMARY KEY,
+                election_id INTEGER REFERENCES duma_elections(id) ON DELETE CASCADE,
+                voter_username TEXT NOT NULL,
+                candidate_username TEXT NOT NULL,
+                voted_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(election_id, voter_username)
+            )
+        """)
 
 
 async def preload_roles():
@@ -291,7 +397,6 @@ async def preload_roles():
                 ON CONFLICT (code) DO NOTHING
             """, r["code"], r["name"], r["emoji"], r["max_holders"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('roles_loaded', 'done')")
-        print(f"Роли загружены: {len(ROLES_INITIAL)}")
 
 
 async def preload_subjects():
@@ -307,7 +412,6 @@ async def preload_subjects():
                 ON CONFLICT (username) DO NOTHING
             """, uname, s["full_name"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('subjects_loaded', 'done')")
-        print(f"Субъекты загружены: {len(SUBJECTS_INITIAL)}")
 
 
 async def preload_initial_roles():
@@ -326,7 +430,6 @@ async def preload_initial_roles():
                     ON CONFLICT (subject_id, role_id) DO NOTHING
                 """, subj["id"], role["id"], ADMIN_ID)
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('initial_roles_loaded', 'done')")
-        print("Начальные роли назначены.")
 
 
 async def preload_parties():
@@ -349,7 +452,6 @@ async def preload_parties():
                     ON CONFLICT (username) DO NOTHING
                 """, party["id"], uname)
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('parties_loaded', 'done')")
-        print(f"Партии загружены: {len(PARTIES_INITIAL)}")
 
 
 async def preload_votes():
@@ -363,7 +465,6 @@ async def preload_votes():
                 VALUES ($1, $2, $3, $4)
             """, -1, normalize_username(v["username"]), v["voter_name"], v["candidate_id"])
         await conn.execute("INSERT INTO service_flags (key, value) VALUES ('preloaded_votes', 'done')")
-        print(f"Предзаписанные голоса: {len(PRELOADED_VOTES)}")
 
 
 # ===== ГОЛОСА =====
@@ -433,6 +534,16 @@ async def update_subject_user_id(username, user_id):
     username = normalize_username(username)
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE subjects SET user_id = $1 WHERE username = $2", user_id, username)
+
+
+async def add_reputation(username, amount):
+    username = normalize_username(username)
+    if not username:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE subjects SET reputation = reputation + $1 WHERE username = $2
+        """, amount, username)
 
 
 async def get_subject_roles(subject_id):
@@ -635,6 +746,20 @@ async def has_role(user_id, role_code):
         return row is not None
 
 
+async def has_role_by_username(username, role_code):
+    username = normalize_username(username)
+    if not username:
+        return False
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT 1 FROM subjects s
+            JOIN subject_roles sr ON sr.subject_id = s.id
+            JOIN roles r ON r.id = sr.role_id
+            WHERE s.username = $1 AND r.code = $2
+        """, username, role_code)
+        return row is not None
+
+
 async def is_admin_active(user_id):
     if user_id != ADMIN_ID:
         return False
@@ -655,6 +780,151 @@ async def activate_admin(user_id):
 async def deactivate_admin(user_id):
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE admin_sessions SET is_active = FALSE WHERE user_id = $1", user_id)
+
+
+# ===== ЗАКОНЫ =====
+async def create_law(title, description, author_username):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO laws (title, description, author_username, status)
+            VALUES ($1, $2, $3, 'duma')
+        """, title, description, normalize_username(author_username))
+        law = await conn.fetchrow("SELECT * FROM laws WHERE title = $1 ORDER BY id DESC LIMIT 1", title)
+        return law
+
+
+async def get_law(law_id):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM laws WHERE id = $1", law_id)
+
+
+async def get_all_laws(status=None):
+    async with db_pool.acquire() as conn:
+        if status:
+            return await conn.fetch("SELECT * FROM laws WHERE status = $1 ORDER BY id DESC", status)
+        return await conn.fetch("SELECT * FROM laws ORDER BY id DESC")
+
+
+async def vote_law(law_id, username, vote):
+    username = normalize_username(username)
+    async with db_pool.acquire() as conn:
+        existing = await conn.fetchrow("SELECT id FROM law_votes WHERE law_id = $1 AND voter_username = $2", law_id, username)
+        if existing:
+            return False, "Ты уже голосовал"
+        await conn.execute("""
+            INSERT INTO law_votes (law_id, voter_username, vote)
+            VALUES ($1, $2, $3)
+        """, law_id, username, vote)
+        # Обновляем счётчики
+        if vote == "for":
+            await conn.execute("UPDATE laws SET duma_votes_for = duma_votes_for + 1 WHERE id = $1", law_id)
+        else:
+            await conn.execute("UPDATE laws SET duma_votes_against = duma_votes_against + 1 WHERE id = $1", law_id)
+        return True, "OK"
+
+
+async def update_law_status(law_id, status):
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE laws SET status = $1 WHERE id = $2", status, law_id)
+
+
+# ===== УКАЗЫ =====
+async def create_decree(title, text, author_username, is_secret=False, secret_for=None):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO decrees (title, text, author_username, is_secret, secret_for)
+            VALUES ($1, $2, $3, $4, $5)
+        """, title, text, normalize_username(author_username), is_secret, secret_for)
+
+
+async def get_all_decrees():
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM decrees ORDER BY id DESC")
+
+
+# ===== ГАЗЕТА =====
+async def add_news(text, source="auto"):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO news (text, source) VALUES ($1, $2)
+        """, text, source)
+
+
+async def get_news(limit=20):
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM news ORDER BY id DESC LIMIT $1", limit)
+
+
+# ===== ГОСДУМА =====
+async def start_duma_election(ends_at):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO duma_elections (ends_at, status) VALUES ($1, 'active')
+        """, ends_at)
+        election = await conn.fetchrow("SELECT * FROM duma_elections ORDER BY id DESC LIMIT 1")
+        return election
+
+
+async def get_active_duma_election():
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM duma_elections WHERE status = 'active' ORDER BY id DESC LIMIT 1")
+
+
+async def add_duma_candidate(election_id, username, party_name):
+    username = normalize_username(username)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO duma_candidates (election_id, username, party_name)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (election_id, username) DO NOTHING
+        """, election_id, username, party_name)
+
+
+async def get_duma_candidates(election_id):
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM duma_candidates WHERE election_id = $1", election_id)
+
+
+async def vote_duma(election_id, voter_username, candidate_username):
+    voter_username = normalize_username(voter_username)
+    candidate_username = normalize_username(candidate_username)
+    async with db_pool.acquire() as conn:
+        existing = await conn.fetchrow("""
+            SELECT id FROM duma_votes WHERE election_id = $1 AND voter_username = $2
+        """, election_id, voter_username)
+        if existing:
+            return False, "Ты уже голосовал"
+        await conn.execute("""
+            INSERT INTO duma_votes (election_id, voter_username, candidate_username)
+            VALUES ($1, $2, $3)
+        """, election_id, voter_username, candidate_username)
+        return True, "OK"
+
+
+async def finish_duma_election(election_id):
+    async with db_pool.acquire() as conn:
+        # Считаем голоса
+        rows = await conn.fetch("""
+            SELECT candidate_username, COUNT(*) as cnt
+            FROM duma_votes WHERE election_id = $1
+            GROUP BY candidate_username ORDER BY cnt DESC LIMIT 3
+        """, election_id)
+        winners = [r["candidate_username"] for r in rows]
+        await conn.execute("""
+            UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2
+        """, json.dumps({"winners": winners}), election_id)
+        # Выдаём роль депутата
+        role = await conn.fetchrow("SELECT id FROM roles WHERE code = 'deputy'")
+        if role:
+            for w in winners:
+                subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", w)
+                if subj:
+                    await conn.execute("""
+                        INSERT INTO subject_roles (subject_id, role_id, assigned_by)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (subject_id, role_id) DO NOTHING
+                    """, subj["id"], role["id"], ADMIN_ID)
+        return winners
 
 
 # ===== ТЕКСТЫ =====
@@ -856,6 +1126,10 @@ def build_admin_keyboard(active=False):
         [InlineKeyboardButton(text="🎭 Должности", callback_data="admin_roles")],
         [InlineKeyboardButton(text="🎭 Партии", callback_data="admin_parties")],
         [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_apps")],
+        [InlineKeyboardButton(text="📜 Законы", callback_data="admin_laws")],
+        [InlineKeyboardButton(text="📢 Указы", callback_data="admin_decrees")],
+        [InlineKeyboardButton(text="📰 Газета", callback_data="admin_news")],
+        [InlineKeyboardButton(text="🗳 ГосДума", callback_data="admin_duma")],
         [InlineKeyboardButton(text="👤 Гражданство", callback_data="admin_citizen")],
         [InlineKeyboardButton(text="📊 Результаты выборов", callback_data="admin_results")],
         [InlineKeyboardButton(text="👥 Кто голосовал", callback_data="admin_status")],
@@ -875,12 +1149,43 @@ def build_admin_subjects_keyboard():
     ])
 
 
+def build_admin_laws_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список законов", callback_data="admin_laws_list")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+    ])
+
+
+def build_admin_decrees_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список указов", callback_data="admin_decrees_list")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+    ])
+
+
+def build_admin_news_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Лента", callback_data="admin_news_list")],
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="admin_news_add")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+    ])
+
+
+def build_admin_duma_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")],
+        [InlineKeyboardButton(text="📊 Результаты", callback_data="admin_duma_results")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+    ])
+
+
 def build_admin_parties_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Список партий", callback_data="admin_parties_list")],
         [InlineKeyboardButton(text="➕ Создать партию", callback_data="admin_create_party")],
         [InlineKeyboardButton(text="🗑 Распустить партию", callback_data="admin_dissolve_party")],
         [InlineKeyboardButton(text="👑 Сменить лидера", callback_data="admin_change_leader")],
+        [InlineKeyboardButton(text="🏆 Кладбище партий", callback_data="admin_party_graveyard")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
     ])
 
@@ -1053,6 +1358,9 @@ async def cmd_start(message: types.Message):
             "/subjects — список субъектов\n"
             "/roles — должности\n"
             "/parties — партии\n"
+            "/laws — законы\n"
+            "/decrees — указы\n"
+            "/news — газета\n"
             "/apps — мои заявки\n"
             "/vote — голосование\n"
             "/help — помощь"
@@ -1068,8 +1376,8 @@ async def cmd_start(message: types.Message):
 async def cmd_help(message: types.Message):
     await message.answer(
         "📖 Помощь\n\n/me — профиль\n/subjects — субъекты\n/roles — должности\n"
-        "/parties — партии\n/apps — мои заявки\n/vote — голосование\n\n"
-        "Кодовое слово для регистрации — два слова, связанные с Эфиопией и Богом."
+        "/parties — партии\n/laws — законы\n/decrees — указы\n/news — газета\n"
+        "/apps — мои заявки\n/vote — голосование"
     )
 
 
@@ -1114,7 +1422,54 @@ async def cmd_parties(message: types.Message):
             callback_data=f"party_view|{p['id']}"
         )])
     buttons.append([InlineKeyboardButton(text="➕ Создать партию", callback_data="party_create")])
+    buttons.append([InlineKeyboardButton(text="🏆 Кладбище партий", callback_data="party_graveyard")])
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@dp.message(Command("laws"))
+async def cmd_laws(message: types.Message):
+    laws = await get_all_laws()
+    if not laws:
+        await message.answer("📜 Законов пока нет.")
+        return
+    text = "━━━━━━━━━━━━━━━━━━━━━\n📜 ЗАКОНЫ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    status_names = {"duma": "🟡 ГосДума", "government": "🟠 Правительство", "president": "🔵 Президент", "approved": "🟢 Принят", "vetoed": "🔴 Вето"}
+    for l in laws[:20]:
+        text += f"#{l['id']} {l['title']} — {status_names.get(l['status'], l['status'])}\n"
+    await message.answer(text)
+
+
+@dp.message(Command("decrees"))
+async def cmd_decrees(message: types.Message):
+    user = message.from_user
+    username = normalize_username(user.username)
+    decrees = await get_all_decrees()
+    if not decrees:
+        await message.answer("📢 Указов пока нет.")
+        return
+    text = "━━━━━━━━━━━━━━━━━━━━━\n📢 УКАЗЫ ПРЕЗИДЕНТА\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for d in decrees[:20]:
+        if d["is_secret"]:
+            if username == d["secret_for"] or message.from_user.id == ADMIN_ID:
+                text += f"🔒 #{d['id']} {d['title']} (секретный)\n"
+            else:
+                continue
+        else:
+            text += f"#{d['id']} {d['title']}\n"
+    await message.answer(text)
+
+
+@dp.message(Command("news"))
+async def cmd_news(message: types.Message):
+    news = await get_news(20)
+    if not news:
+        await message.answer("📰 Газета пока пустая.")
+        return
+    text = "━━━━━━━━━━━━━━━━━━━━━\n📰 ГАЗЕТА ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for n in news:
+        dt = n["created_at"].strftime("%d.%m %H:%M") if n["created_at"] else "—"
+        text += f"[{dt}] {n['text']}\n\n"
+    await message.answer(text)
 
 
 @dp.message(Command("apps"))
@@ -1157,9 +1512,7 @@ async def party_create(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Ты уже в партии. Сначала выйди.", show_alert=True)
             return
         await callback.message.answer(
-            "➕ СОЗДАНИЕ ПАРТИИ\n\n"
-            "Шаг 1/3. Отправь НАЗВАНИЕ партии.\n"
-            "Например: Шашлык"
+            "➕ СОЗДАНИЕ ПАРТИИ\n\nШаг 1/3. Отправь НАЗВАНИЕ партии.\nНапример: Шашлык"
         )
         await state.set_state(PartyForm.waiting_name)
         await callback.answer()
@@ -1225,11 +1578,203 @@ async def party_get_description(message: types.Message, state: FSMContext):
         target_username=target,
         data={"name": name, "emoji": emoji, "description": description}
     )
-
+    await add_reputation(username, REP_RULES["application"])
     await message.answer(
         f"✅ Заявка на создание партии отправлена!\n\n"
         f"Название: {name}\nЭмодзи: {emoji}\nПрограмма: {description}\n\n"
         f"Ожидай решения Президента."
+    )
+    await state.clear()
+
+
+# ===== FSM: СОЗДАНИЕ ЗАКОНА =====
+@dp.message(Command("law"))
+async def cmd_law(message: types.Message, state: FSMContext):
+    user = message.from_user
+    username = normalize_username(user.username)
+    subject = await get_subject(user.id, username)
+    if not subject:
+        await message.answer("❌ Только для зарегистрированных.")
+        return
+    if not await has_role_by_username(username, "deputy"):
+        await message.answer("❌ Только депутаты ГосДумы могут вносить законы.")
+        return
+    await message.answer("📜 ВНЕСЕНИЕ ЗАКОНА\n\nШаг 1/2. Отправь НАЗВАНИЕ закона.")
+    await state.set_state(LawForm.waiting_title)
+
+
+@dp.message(LawForm.waiting_title)
+async def law_get_title(message: types.Message, state: FSMContext):
+    title = message.text.strip() if message.text else ""
+    if len(title) < 3:
+        await message.answer("Слишком короткое. Попробуй снова.")
+        return
+    await state.update_data(law_title=title)
+    await message.answer(f"Название: {title}\n\nШаг 2/2. Отправь ОПИСАНИЕ закона.")
+    await state.set_state(LawForm.waiting_description)
+
+
+@dp.message(LawForm.waiting_description)
+async def law_get_description(message: types.Message, state: FSMContext):
+    description = message.text.strip() if message.text else ""
+    data = await state.get_data()
+    title = data.get("law_title")
+    user = message.from_user
+    username = normalize_username(user.username)
+    law = await create_law(title, description, username)
+    await add_news(f"📜 Внесён законопроект «{title}» от {username}")
+    await message.answer(
+        f"✅ Законопроект создан!\n\n"
+        f"#{law['id']} «{title}»\n\n"
+        f"Голосование в ГосДуме — командой /laws → выбрать закон."
+    )
+    await state.clear()
+
+
+# ===== FSM: СОЗДАНИЕ УКАЗА (президент) =====
+@dp.message(Command("decree"))
+async def cmd_decree(message: types.Message, state: FSMContext):
+    user = message.from_user
+    username = normalize_username(user.username)
+    is_president = await has_role_by_username(username, "president")
+    is_admin = await is_admin_active(user.id)
+    if not is_president and not is_admin:
+        await message.answer("❌ Только Президент или Админ.")
+        return
+    await message.answer("📢 СОЗДАНИЕ УКАЗА\n\nШаг 1/3. Отправь ЗАГОЛОВОК.")
+    await state.set_state(DecreeForm.waiting_title)
+
+
+@dp.message(DecreeForm.waiting_title)
+async def decree_title(message: types.Message, state: FSMContext):
+    title = message.text.strip() if message.text else ""
+    if len(title) < 3:
+        await message.answer("Слишком короткий. Попробуй снова.")
+        return
+    await state.update_data(decree_title=title)
+    await message.answer(f"Заголовок: {title}\n\nШаг 2/3. Отправь ТЕКСТ указа.")
+    await state.set_state(DecreeForm.waiting_text)
+
+
+@dp.message(DecreeForm.waiting_text)
+async def decree_text(message: types.Message, state: FSMContext):
+    text = message.text.strip() if message.text else ""
+    await state.update_data(decree_text=text)
+    await message.answer(
+        "Шаг 3/3. Это СЕКРЕТНЫЙ указ?\n\n"
+        "Отправь username того, кто должен видеть (например @Nikolas_Connor), "
+        "или напиши «нет» для открытого указа."
+    )
+    await state.set_state(DecreeForm.waiting_secret)
+
+
+@dp.message(DecreeForm.waiting_secret)
+async def decree_secret(message: types.Message, state: FSMContext):
+    answer = message.text.strip() if message.text else "нет"
+    is_secret = False
+    secret_for = None
+    if answer.lower() != "нет" and answer.startswith("@"):
+        is_secret = True
+        secret_for = normalize_username(answer)
+
+    data = await state.get_data()
+    title = data.get("decree_title")
+    text = data.get("decree_text")
+    user = message.from_user
+    username = normalize_username(user.username)
+
+    await create_decree(title, text, username, is_secret, secret_for)
+
+    if is_secret:
+        await add_news(f"🔒 Подписан секретный указ (только для {secret_for})")
+        await message.answer(f"✅ Секретный указ «{title}» создан.")
+    else:
+        await add_news(f"📢 Подписан указ: «{title}»")
+        # Рассылаем всем
+        subjects = await get_all_subjects()
+        for s in subjects:
+            if s["user_id"] and s["user_id"] > 0:
+                try:
+                    await message.bot.send_message(
+                        s["user_id"],
+                        f"📢 УКАЗ ПРЕЗИДЕНТА\n\n{title}\n\n{text}"
+                    )
+                except Exception:
+                    pass
+        await message.answer(f"✅ Указ «{title}» подписан и разослан.")
+    await state.clear()
+
+
+# ===== FSM: ДОБАВЛЕНИЕ НОВОСТИ =====
+@dp.callback_query(lambda c: c.data == "admin_news_add")
+async def admin_news_add(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.answer("📰 Отправь текст новости.")
+        await state.set_state(NewsForm.waiting_text)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.message(NewsForm.waiting_text)
+async def news_text(message: types.Message, state: FSMContext):
+    text = message.text.strip() if message.text else ""
+    if len(text) < 3:
+        await message.answer("Слишком коротко.")
+        return
+    await add_news(f"📢 {text}", source="admin")
+    await message.answer("✅ Новость добавлена.")
+    await state.clear()
+
+
+# ===== FSM: ЗАПУСК ГОСДУМЫ =====
+@dp.callback_query(lambda c: c.data == "admin_duma_start")
+async def admin_duma_start(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.answer(
+            "🗳 ЗАПУСК ВЫБОРОВ В ГОСДУМУ\n\n"
+            "Отправь ДАТУ ОКОНЧАНИЯ в формате:\n"
+            "ГГГГ-ММ-ДД ЧЧ:ММ\n\n"
+            "Например: 2026-11-01 20:00"
+        )
+        await state.set_state(ElectionForm.waiting_date_end)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.message(ElectionForm.waiting_date_end)
+async def duma_date_end(message: types.Message, state: FSMContext):
+    try:
+        dt = datetime.strptime(message.text.strip(), "%Y-%m-%d %H:%M")
+        dt = dt.replace(tzinfo=MSK)
+    except Exception:
+        await message.answer("Неверный формат. Попробуй: 2026-11-01 20:00")
+        return
+    election = await start_duma_election(dt)
+    # Собираем кандидатов от партий
+    parties = await get_all_parties()
+    for p in parties:
+        members = await get_party_members(p["id"])
+        for m in members:
+            await add_duma_candidate(election["id"], m["username"], p["name"])
+    await add_news(f"🗳 Начались выборы в ГосДуму! До {dt.strftime('%d.%m.%Y %H:%M')} МСК")
+    await message.answer(
+        f"✅ Выборы в ГосДуму запущены!\n\n"
+        f"Окончание: {dt.strftime('%d.%m.%Y %H:%M')} МСК\n"
+        f"Кандидатов: {len(await get_duma_candidates(election['id']))}"
     )
     await state.clear()
 
@@ -1256,7 +1801,6 @@ async def handle_text(message: types.Message):
                 LIMIT 1
             """)
         target = president["username"] if president else None
-
         await create_application(
             app_type="citizenship",
             author_username=username,
@@ -1273,7 +1817,7 @@ async def handle_text(message: types.Message):
     )
 
 
-# ===== ПАРТИИ — ПУБЛИЧНЫЕ =====
+# ===== ПАРТИИ =====
 @dp.callback_query(lambda c: c.data.startswith("party_view|"))
 async def party_view(callback: types.CallbackQuery):
     try:
@@ -1286,10 +1830,9 @@ async def party_view(callback: types.CallbackQuery):
         user = callback.from_user
         username = normalize_username(user.username)
         user_party = await get_user_party(username)
-
         buttons = []
         if user_party and user_party["id"] == pid:
-            buttons.append([InlineKeyboardButton(text="🚪 Выйти из партии", callback_data=f"party_leave|{pid}")])
+            buttons.append([InlineKeyboardButton(text="🚪 Выйти", callback_data=f"party_leave|{pid}")])
         elif not user_party:
             buttons.append([InlineKeyboardButton(text="✍️ Вступить", callback_data=f"party_join|{pid}")])
         else:
@@ -1317,12 +1860,37 @@ async def party_back(callback: types.CallbackQuery):
                 callback_data=f"party_view|{p['id']}"
             )])
         buttons.append([InlineKeyboardButton(text="➕ Создать партию", callback_data="party_create")])
+        buttons.append([InlineKeyboardButton(text="🏆 Кладбище партий", callback_data="party_graveyard")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
         print(f"Ошибка party_back: {e}")
         try:
             await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "party_graveyard")
+async def party_graveyard(callback: types.CallbackQuery):
+    try:
+        async with db_pool.acquire() as conn:
+            dead = await conn.fetch("SELECT * FROM parties WHERE status = 'dissolved' ORDER BY id DESC")
+        if not dead:
+            await callback.message.edit_text("🏆 Кладбище партий пустое.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n🏆 КЛАДБИЩЕ ПАРТИЙ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for p in dead:
+            text += f"💀 {p['emoji']} {p['name']} (RIP)\n"
+        text += "\n_Эти названия забронированы навсегда._"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="party_back")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
         except Exception:
             pass
 
@@ -1352,6 +1920,7 @@ async def party_join(callback: types.CallbackQuery):
             target_username=party["leader_username"],
             data={"party_id": pid, "party_name": party["name"]}
         )
+        await add_reputation(username, REP_RULES["application"])
         await callback.message.answer(
             f"✍️ Заявка на вступление в партию «{party['name']}» отправлена лидеру.\nОжидай одобрения."
         )
@@ -1374,6 +1943,116 @@ async def party_leave(callback: types.CallbackQuery):
         await callback.answer()
     except Exception as e:
         print(f"Ошибка party_leave: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== ЗАКОНЫ: голосование =====
+@dp.callback_query(lambda c: c.data.startswith("law_view|"))
+async def law_view(callback: types.CallbackQuery):
+    try:
+        lid = int(callback.data.split("|")[1])
+        law = await get_law(lid)
+        if not law:
+            await callback.answer("Закон не найден.", show_alert=True)
+            return
+        text = f"━━━━━━━━━━━━━━━━━━━━━\n📜 ЗАКОН #{lid}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += f"«{law['title']}»\n\n{law['description']}\n\n"
+        text += f"Автор: {law['author_username']}\n"
+        text += f"Статус: {law['status']}\n"
+        text += f"ГосДума: за {law['duma_votes_for']}, против {law['duma_votes_against']}"
+        buttons = []
+        user = callback.from_user
+        username = normalize_username(user.username)
+        if law["status"] == "duma" and await has_role_by_username(username, "deputy"):
+            buttons.append([InlineKeyboardButton(text="✅ За", callback_data=f"law_vote|{lid}|for")])
+            buttons.append([InlineKeyboardButton(text="❌ Против", callback_data=f"law_vote|{lid}|against")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="laws_back")])
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "laws_back")
+async def laws_back(callback: types.CallbackQuery):
+    try:
+        laws = await get_all_laws()
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📜 ЗАКОНЫ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if not laws:
+            text += "Законов пока нет."
+        status_names = {"duma": "🟡 ГосДума", "government": "🟠 Правительство", "president": "🔵 Президент", "approved": "🟢 Принят", "vetoed": "🔴 Вето"}
+        buttons = []
+        for l in laws[:10]:
+            buttons.append([InlineKeyboardButton(
+                text=f"#{l['id']} {l['title']} — {status_names.get(l['status'], '')}",
+                callback_data=f"law_view|{l['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(text="📜 Все законы", callback_data="laws_all")])
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "laws_all")
+async def laws_all(callback: types.CallbackQuery):
+    try:
+        laws = await get_all_laws()
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📜 ВСЕ ЗАКОНЫ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        status_names = {"duma": "🟡 ГосДума", "government": "🟠 Правительство", "president": "🔵 Президент", "approved": "🟢 Принят", "vetoed": "🔴 Вето"}
+        for l in laws:
+            text += f"#{l['id']} «{l['title']}» — {status_names.get(l['status'], l['status'])}\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="laws_back")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer("Ошибка", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("law_vote|"))
+async def law_vote(callback: types.CallbackQuery):
+    try:
+        parts = callback.data.split("|")
+        lid = int(parts[1])
+        vote = parts[2]
+        user = callback.from_user
+        username = normalize_username(user.username)
+        ok, msg = await vote_law(lid, username, vote)
+        if not ok:
+            await callback.answer(msg, show_alert=True)
+            return
+        await callback.answer("Голос принят!")
+        # Проверяем — все депутаты проголосовали?
+        law = await get_law(lid)
+        async with db_pool.acquire() as conn:
+            total_deputies = await conn.fetchval("""
+                SELECT COUNT(*) FROM subject_roles sr
+                JOIN roles r ON r.id = sr.role_id
+                WHERE r.code = 'deputy'
+            """)
+            voted = await conn.fetchval("SELECT COUNT(*) FROM law_votes WHERE law_id = $1", lid)
+        if voted >= total_deputies and total_deputies > 0:
+            # Отправляем в Правительство
+            await update_law_status(lid, "government")
+            await add_news(f"📜 Закон «{law['title']}» прошёл ГосДуму")
+            await callback.message.answer("✅ Все депутаты проголосовали! Закон направлен в Правительство.")
+    except Exception as e:
+        print(f"Ошибка: {e}")
         try:
             await callback.answer(f"Ошибка: {e}", show_alert=True)
         except Exception:
@@ -1450,7 +2129,7 @@ async def admin_check_and_active(callback):
         await callback.answer("Только админ.", show_alert=True)
         return False
     if not await is_admin_active(callback.from_user.id):
-        await callback.answer("🔒 Админ-режим не активен. Нажми кнопку активации.", show_alert=True)
+        await callback.answer("🔒 Админ-режим не активен.", show_alert=True)
         return False
     return True
 
@@ -1570,6 +2249,7 @@ async def admin_assign_role(callback: types.CallbackQuery):
                 subject = await conn.fetchrow("SELECT * FROM subjects WHERE id = $1", sid)
                 role = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", rid)
             text = f"✅ ГОТОВО!\n\n{subject['full_name']} назначен:\n{role['emoji']} {role['name']}"
+            await add_news(f"👑 {subject['full_name']} назначен: {role['name']}")
             try:
                 await callback.message.edit_text(text)
             except Exception:
@@ -1659,15 +2339,15 @@ async def admin_roles(callback: types.CallbackQuery):
             pass
 
 
-# ===== АДМИН: ПАРТИИ =====
-@dp.callback_query(lambda c: c.data == "admin_parties")
-async def admin_parties(callback: types.CallbackQuery):
+# ===== АДМИН: ЗАКОНЫ =====
+@dp.callback_query(lambda c: c.data == "admin_laws")
+async def admin_laws(callback: types.CallbackQuery):
     try:
         if not await admin_check_and_active(callback):
             return
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n🎭 ПАРТИИ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
-            reply_markup=build_admin_parties_keyboard()
+            "━━━━━━━━━━━━━━━━━━━━━\n📜 ЗАКОНЫ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_laws_keyboard()
         )
         await callback.answer()
     except Exception as e:
@@ -1678,186 +2358,26 @@ async def admin_parties(callback: types.CallbackQuery):
             pass
 
 
-@dp.callback_query(lambda c: c.data == "admin_parties_list")
-async def admin_parties_list(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "admin_laws_list")
+async def admin_laws_list(callback: types.CallbackQuery):
     try:
         if not await admin_check_and_active(callback):
             return
-        kb = await build_admin_parties_list_keyboard()
-        await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n🎭 СПИСОК ПАРТИЙ\n━━━━━━━━━━━━━━━━━━━━━",
-            reply_markup=kb
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data.startswith("admin_party_view|"))
-async def admin_party_view(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        pid = int(callback.data.split("|")[1])
-        party = await get_party(pid)
-        if not party:
-            await callback.answer("Не найдена.", show_alert=True)
-            return
-        text = await build_party_detail_text(party)
-        text += f"\n\nСтатус: {party['status']}"
-        await callback.message.answer(text)
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data == "admin_create_party")
-async def admin_create_party(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        await callback.message.answer(
-            "➕ СОЗДАНИЕ ПАРТИИ (админ)\n\nОтправь команду:\n"
-            "/make_party НАЗВАНИЕ | ЭМОДЗИ | @лидер | ОПИСАНИЕ\n\n"
-            "Пример:\n/make_party Шашлык | 🍖 | @Bloha_71 | За встречи на природе"
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data == "admin_dissolve_party")
-async def admin_dissolve_party(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        kb = await build_admin_dissolve_party_keyboard()
-        await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n🗑 РАСПУСТИТЬ ПАРТИЮ\n━━━━━━━━━━━━━━━━━━━━━",
-            reply_markup=kb
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data.startswith("admin_dissolve|"))
-async def admin_dissolve(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        pid = int(callback.data.split("|")[1])
-        await dissolve_party(pid)
-        await callback.message.edit_text("✅ Партия распущена.")
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data == "admin_change_leader")
-async def admin_change_leader(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        kb = await build_admin_change_leader_keyboard()
-        await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n👑 СМЕНИТЬ ЛИДЕРА\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери партию:",
-            reply_markup=kb
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data.startswith("admin_leader_party|"))
-async def admin_leader_party(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        pid = int(callback.data.split("|")[1])
-        kb = await build_admin_leader_subject_keyboard(pid)
-        await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n👑 НОВЫЙ ЛИДЕР\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
-            reply_markup=kb
-        )
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-@dp.callback_query(lambda c: c.data.startswith("admin_leader_set|"))
-async def admin_leader_set(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        parts = callback.data.split("|")
-        pid = int(parts[1])
-        new_leader = parts[2]
-        party = await get_party(pid)
-        old_leader = party["leader_username"] if party else None
-        await change_party_leader(pid, new_leader)
-        if old_leader and old_leader != new_leader:
-            await transfer_applications(old_leader, new_leader)
-        await callback.message.edit_text(f"✅ Новый лидер: {new_leader}")
-        await callback.answer()
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        try:
-            await callback.answer(f"Ошибка: {e}", show_alert=True)
-        except Exception:
-            pass
-
-
-# ===== АДМИН: ЗАЯВКИ =====
-@dp.callback_query(lambda c: c.data == "admin_apps")
-async def admin_apps(callback: types.CallbackQuery):
-    try:
-        if not await admin_check_and_active(callback):
-            return
-        apps = await get_pending_applications()
-        if not apps:
-            await callback.message.edit_text("📋 Заявок нет.")
+        laws = await get_all_laws()
+        if not laws:
+            await callback.message.edit_text("📜 Законов нет.")
             await callback.answer()
             return
-        text = "━━━━━━━━━━━━━━━━━━━━━\n📋 ЗАЯВКИ (на рассмотрении)\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📜 ЗАКОНЫ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
         buttons = []
-        for a in apps:
-            text += f"#{a['id']} — {a['type']}\n"
-            text += f"   Автор: {a['author_username']}\n"
-            text += f"   Адресат: {a['target_username']}\n\n"
+        status_names = {"duma": "🟡 ГосДума", "government": "🟠 Правительство", "president": "🔵 Президент", "approved": "🟢 Принят", "vetoed": "🔴 Вето"}
+        for l in laws:
+            text += f"#{l['id']} {l['title']} — {status_names.get(l['status'], '')}\n"
             buttons.append([InlineKeyboardButton(
-                text=f"#{a['id']} — открыть",
-                callback_data=f"admin_app_view|{a['id']}"
+                text=f"#{l['id']} — {l['title'][:20]}",
+                callback_data=f"admin_law_view|{l['id']}"
             )])
-        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_laws")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1868,33 +2388,25 @@ async def admin_apps(callback: types.CallbackQuery):
             pass
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_app_view|"))
-async def admin_app_view(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("admin_law_view|"))
+async def admin_law_view(callback: types.CallbackQuery):
     try:
         if not await admin_check_and_active(callback):
             return
-        app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        if not app:
-            await callback.answer("Не найдена.", show_alert=True)
+        lid = int(callback.data.split("|")[1])
+        law = await get_law(lid)
+        if not law:
+            await callback.answer("Не найден.", show_alert=True)
             return
-        data = app["data"]
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except Exception:
-                data = {}
-        text = f"━━━━━━━━━━━━━━━━━━━━━\n📋 ЗАЯВКА #{app_id}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-        text += f"Тип: {app['type']}\n"
-        text += f"Автор: {app['author_username']}\n"
-        text += f"Адресат: {app['target_username']}\n"
-        if data:
-            text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
-        buttons = [
-            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")],
-            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")],
-        ]
+        text = f"📜 ЗАКОН #{lid}\n\n«{law['title']}»\n\n{law['description']}\n\nСтатус: {law['status']}"
+        buttons = []
+        if law["status"] == "government":
+            buttons.append([InlineKeyboardButton(text="✅ Правительство одобрило", callback_data=f"admin_law_gov|{lid}")])
+            buttons.append([InlineKeyboardButton(text="❌ Правительство отклонило", callback_data=f"admin_law_gov_reject|{lid}")])
+        if law["status"] == "president":
+            buttons.append([InlineKeyboardButton(text="✅ Президент подписал", callback_data=f"admin_law_sign|{lid}")])
+            buttons.append([InlineKeyboardButton(text="❌ Вето", callback_data=f"admin_law_veto|{lid}")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_laws_list")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -1905,50 +2417,14 @@ async def admin_app_view(callback: types.CallbackQuery):
             pass
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_app_approve|"))
-async def admin_app_approve(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("admin_law_gov|"))
+async def admin_law_gov(callback: types.CallbackQuery):
     try:
         if not await admin_check_and_active(callback):
             return
-        app_id = int(callback.data.split("|")[1])
-        app = await get_application(app_id)
-        if not app:
-            await callback.answer("Не найдена.", show_alert=True)
-            return
-        data = app["data"]
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except Exception:
-                data = {}
-        if app["type"] == "citizenship":
-            user_id = data.get("user_id")
-            username = app["author_username"]
-            if username:
-                async with db_pool.acquire() as conn:
-                    subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", username)
-                    if not subj:
-                        await conn.execute("""
-                            INSERT INTO subjects (user_id, username, full_name, is_citizen)
-                            VALUES ($1, $2, $3, TRUE)
-                            ON CONFLICT (username) DO UPDATE SET is_citizen = TRUE
-                        """, user_id, username, app["author_name"] or "Новый субъект")
-                    else:
-                        await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", username)
-        elif app["type"] == "create_party":
-            name = data.get("name")
-            emoji = data.get("emoji", "🎭")
-            description = data.get("description", "")
-            leader = app["author_username"]
-            existing = await get_party_by_name(name)
-            if not existing:
-                await create_party(name, emoji, description, leader)
-        elif app["type"] == "join_party":
-            pid = data.get("party_id")
-            if pid:
-                await add_party_member(pid, app["author_username"])
-        await approve_application(app_id, ADMIN_ID)
-        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
+        lid = int(callback.data.split("|")[1])
+        await update_law_status(lid, "president")
+        await callback.message.edit_text("✅ Одобрено Правительством. Направлено Президенту.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1958,14 +2434,14 @@ async def admin_app_approve(callback: types.CallbackQuery):
             pass
 
 
-@dp.callback_query(lambda c: c.data.startswith("admin_app_reject|"))
-async def admin_app_reject(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("admin_law_gov_reject|"))
+async def admin_law_gov_reject(callback: types.CallbackQuery):
     try:
         if not await admin_check_and_active(callback):
             return
-        app_id = int(callback.data.split("|")[1])
-        await reject_application(app_id, ADMIN_ID, "Отклонено админом")
-        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        lid = int(callback.data.split("|")[1])
+        await update_law_status(lid, "vetoed")
+        await callback.message.edit_text("❌ Отклонено Правительством.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1975,6 +2451,188 @@ async def admin_app_reject(callback: types.CallbackQuery):
             pass
 
 
+@dp.callback_query(lambda c: c.data.startswith("admin_law_sign|"))
+async def admin_law_sign(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        lid = int(callback.data.split("|")[1])
+        law = await get_law(lid)
+        await update_law_status(lid, "approved")
+        await add_news(f"🟢 Закон «{law['title']}» подписан Президентом!")
+        await add_reputation(law["author_username"], REP_RULES["law_approved"])
+        await callback.message.edit_text("✅ Закон подписан.")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_law_veto|"))
+async def admin_law_veto(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        lid = int(callback.data.split("|")[1])
+        law = await get_law(lid)
+        await update_law_status(lid, "vetoed")
+        await add_reputation(law["author_username"], REP_RULES["law_rejected"])
+        await callback.message.edit_text("❌ Вето.")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== АДМИН: УКАЗЫ =====
+@dp.callback_query(lambda c: c.data == "admin_decrees")
+async def admin_decrees(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n📢 УКАЗЫ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_decrees_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_decrees_list")
+async def admin_decrees_list(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        decrees = await get_all_decrees()
+        if not decrees:
+            await callback.message.edit_text("📢 Указов нет.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📢 УКАЗЫ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for d in decrees:
+            marker = "🔒" if d["is_secret"] else "📢"
+            text += f"{marker} #{d['id']} {d['title']}\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_decrees")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== АДМИН: ГАЗЕТА =====
+@dp.callback_query(lambda c: c.data == "admin_news")
+async def admin_news(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n📰 ГАЗЕТА\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_news_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_news_list")
+async def admin_news_list(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        news = await get_news(20)
+        if not news:
+            await callback.message.edit_text("📰 Пусто.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📰 ГАЗЕТА\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for n in news:
+            dt = n["created_at"].strftime("%d.%m %H:%M") if n["created_at"] else "—"
+            text += f"[{dt}] {n['text']}\n\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_news")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== АДМИН: ГОСДУМА =====
+@dp.callback_query(lambda c: c.data == "admin_duma")
+async def admin_duma(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n🗳 ГОСДУМА\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_duma_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_duma_results")
+async def admin_duma_results(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        async with db_pool.acquire() as conn:
+            elections = await conn.fetch("SELECT * FROM duma_elections ORDER BY id DESC LIMIT 5")
+        if not elections:
+            await callback.message.edit_text("Выборов ещё не было.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n🗳 РЕЗУЛЬТАТЫ ГОСДУМЫ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for e in elections:
+            res = e["results"]
+            if isinstance(res, str):
+                try:
+                    res = json.loads(res)
+                except Exception:
+                    res = {}
+            winners = res.get("winners", [])
+            text += f"#{e['id']} — {e['status']}\n"
+            if winners:
+                text += f"  Победители: {', '.join(winners)}\n"
+            text += "\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_duma")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== АДМИН: ГРАЖДАНСТВО =====
 @dp.callback_query(lambda c: c.data == "admin_citizen")
 async def admin_citizen(callback: types.CallbackQuery):
     try:
@@ -1987,10 +2645,9 @@ async def admin_citizen(callback: types.CallbackQuery):
             await callback.answer()
             return
         text = "━━━━━━━━━━━━━━━━━━━━━\n👤 ЗАЯВКИ НА ГРАЖДАНСТВО\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-        for a in citizens:
-            text += f"#{a['id']} — {a['author_username']}\n"
         buttons = []
         for a in citizens:
+            text += f"#{a['id']} — {a['author_username']}\n"
             buttons.append([InlineKeyboardButton(
                 text=f"#{a['id']} — {a['author_username']}",
                 callback_data=f"admin_app_view|{a['id']}"
@@ -2200,6 +2857,352 @@ async def admin_reset_yes(callback: types.CallbackQuery):
             pass
 
 
+# ===== АДМИН: ЗАЯВКИ (продолжение) =====
+@dp.callback_query(lambda c: c.data == "admin_apps")
+async def admin_apps(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        apps = await get_pending_applications()
+        if not apps:
+            await callback.message.edit_text("📋 Заявок нет.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n📋 ЗАЯВКИ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        buttons = []
+        for a in apps:
+            text += f"#{a['id']} — {a['type']}\n   Автор: {a['author_username']}\n   Адресат: {a['target_username']}\n\n"
+            buttons.append([InlineKeyboardButton(
+                text=f"#{a['id']} — открыть",
+                callback_data=f"admin_app_view|{a['id']}"
+            )])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_view|"))
+async def admin_app_view(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        app_id = int(callback.data.split("|")[1])
+        app = await get_application(app_id)
+        if not app:
+            await callback.answer("Не найдена.", show_alert=True)
+            return
+        data = app["data"]
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        text = f"📋 ЗАЯВКА #{app_id}\n\nТип: {app['type']}\nАвтор: {app['author_username']}\nАдресат: {app['target_username']}\n"
+        if data:
+            text += f"Данные: {json.dumps(data, ensure_ascii=False)}\n"
+        buttons = [
+            [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{app_id}")],
+            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{app_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")],
+        ]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_approve|"))
+async def admin_app_approve(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        app_id = int(callback.data.split("|")[1])
+        app = await get_application(app_id)
+        if not app:
+            await callback.answer("Не найдена.", show_alert=True)
+            return
+        data = app["data"]
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        if app["type"] == "citizenship":
+            user_id = data.get("user_id")
+            username = app["author_username"]
+            if username:
+                async with db_pool.acquire() as conn:
+                    subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", username)
+                    if not subj:
+                        await conn.execute("""
+                            INSERT INTO subjects (user_id, username, full_name, is_citizen)
+                            VALUES ($1, $2, $3, TRUE)
+                            ON CONFLICT (username) DO UPDATE SET is_citizen = TRUE
+                        """, user_id, username, app["author_name"] or "Новый субъект")
+                    else:
+                        await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", username)
+        elif app["type"] == "create_party":
+            name = data.get("name")
+            emoji = data.get("emoji", "🎭")
+            description = data.get("description", "")
+            leader = app["author_username"]
+            existing = await get_party_by_name(name)
+            if not existing:
+                await create_party(name, emoji, description, leader)
+                await add_news(f"🎭 Создана партия «{name}» {emoji}")
+                await add_reputation(leader, REP_RULES["party_created"])
+        elif app["type"] == "join_party":
+            pid = data.get("party_id")
+            if pid:
+                await add_party_member(pid, app["author_username"])
+        await approve_application(app_id, ADMIN_ID)
+        await add_reputation(app["author_username"], REP_RULES["application_approved"])
+        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_reject|"))
+async def admin_app_reject(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        app_id = int(callback.data.split("|")[1])
+        app = await get_application(app_id)
+        await reject_application(app_id, ADMIN_ID, "Отклонено админом")
+        if app:
+            await add_reputation(app["author_username"], REP_RULES["application_rejected"])
+        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+# ===== АДМИН: ПАРТИИ =====
+@dp.callback_query(lambda c: c.data == "admin_parties")
+async def admin_parties(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n🎭 ПАРТИИ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_parties_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_parties_list")
+async def admin_parties_list(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        kb = await build_admin_parties_list_keyboard()
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n🎭 СПИСОК ПАРТИЙ\n━━━━━━━━━━━━━━━━━━━━━",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_party_graveyard")
+async def admin_party_graveyard(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        async with db_pool.acquire() as conn:
+            dead = await conn.fetch("SELECT * FROM parties WHERE status = 'dissolved' ORDER BY id DESC")
+        if not dead:
+            await callback.message.edit_text("🏆 Кладбище пустое.")
+            await callback.answer()
+            return
+        text = "━━━━━━━━━━━━━━━━━━━━━\n🏆 КЛАДБИЩЕ ПАРТИЙ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for p in dead:
+            text += f"💀 {p['emoji']} {p['name']} (RIP)\n"
+        buttons = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_parties")]]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_party_view|"))
+async def admin_party_view(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        pid = int(callback.data.split("|")[1])
+        party = await get_party(pid)
+        if not party:
+            await callback.answer("Не найдена.", show_alert=True)
+            return
+        text = await build_party_detail_text(party)
+        text += f"\n\nСтатус: {party['status']}"
+        await callback.message.answer(text)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_create_party")
+async def admin_create_party(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        await callback.message.answer(
+            "➕ СОЗДАНИЕ ПАРТИИ (админ)\n\nОтправь команду:\n"
+            "/make_party НАЗВАНИЕ | ЭМОДЗИ | @лидер | ОПИСАНИЕ\n\n"
+            "Пример:\n/make_party Шашлык | 🍖 | @Bloha_71 | За встречи на природе"
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_dissolve_party")
+async def admin_dissolve_party(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        kb = await build_admin_dissolve_party_keyboard()
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n🗑 РАСПУСТИТЬ ПАРТИЮ\n━━━━━━━━━━━━━━━━━━━━━",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_dissolve|"))
+async def admin_dissolve(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        pid = int(callback.data.split("|")[1])
+        party = await get_party(pid)
+        await dissolve_party(pid)
+        if party:
+            await add_news(f"💀 Партия «{party['name']}» распущена (RIP)")
+            await add_reputation(party["leader_username"], REP_RULES["party_dissolved"])
+        await callback.message.edit_text("✅ Партия распущена.")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_change_leader")
+async def admin_change_leader(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        kb = await build_admin_change_leader_keyboard()
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n👑 СМЕНИТЬ ЛИДЕРА\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери партию:",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_leader_party|"))
+async def admin_leader_party(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        pid = int(callback.data.split("|")[1])
+        kb = await build_admin_leader_subject_keyboard(pid)
+        await callback.message.edit_text(
+            "━━━━━━━━━━━━━━━━━━━━━\n👑 НОВЫЙ ЛИДЕР\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
+            reply_markup=kb
+        )
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data.startswith("admin_leader_set|"))
+async def admin_leader_set(callback: types.CallbackQuery):
+    try:
+        if not await admin_check_and_active(callback):
+            return
+        parts = callback.data.split("|")
+        pid = int(parts[1])
+        new_leader = parts[2]
+        party = await get_party(pid)
+        old_leader = party["leader_username"] if party else None
+        await change_party_leader(pid, new_leader)
+        if old_leader and old_leader != new_leader:
+            await transfer_applications(old_leader, new_leader)
+        await callback.message.edit_text(f"✅ Новый лидер: {new_leader}")
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
 @dp.message(Command("make_party"))
 async def cmd_make_party(message: types.Message):
     if not await is_admin_active(message.from_user.id):
@@ -2220,6 +3223,7 @@ async def cmd_make_party(message: types.Message):
             await message.answer("Партия с таким названием уже есть.")
             return
         await create_party(name, emoji, desc, leader)
+        await add_news(f"🎭 Создана партия «{name}» {emoji}")
         await message.answer(f"✅ Партия «{name}» создана.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
@@ -2306,6 +3310,7 @@ async def process_vote(callback: types.CallbackQuery):
         voter_name = get_voter_name(user.id, username) if not tester else "🧪 Тест"
 
         await save_vote(user.id, username, voter_name, candidate_id)
+        await add_reputation(username, REP_RULES["vote"])
 
         suffix = "\n\nМожешь голосовать ещё раз." if tester else ""
         caption = (
@@ -2392,6 +3397,16 @@ async def background_watcher(bot: Bot):
                     except Exception:
                         pass
                 flags["election_end_notified"] = True
+
+            # Проверка окончания выборов в ГосДуму
+            try:
+                active_e = await get_active_duma_election()
+                if active_e and active_e["ends_at"]:
+                    if now_msk() >= active_e["ends_at"]:
+                        winners = await finish_duma_election(active_e["id"])
+                        await add_news(f"🗳 Выборы в ГосДуму завершены! Победители: {', '.join(winners)}")
+            except Exception as e:
+                print(f"Ошибка duma watcher: {e}")
         except Exception as e:
             print(f"Ошибка watcher: {e}")
         await asyncio.sleep(30)
