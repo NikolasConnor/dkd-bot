@@ -89,7 +89,7 @@ INITIAL_ROLES = [
 ]
 
 # ===== КОДОВОЕ СЛОВО =====
-SECRET_WORD_VARIANTS = ["бог эфиопии", "бог ефиопии"]
+SECRET_WORD_VARIANTS = ["Бог Эфиопии", "бог ефиопии"]
 
 db_pool = None
 flags = {"test_end_notified": False, "election_end_notified": False}
@@ -610,14 +610,13 @@ async def build_subject_profile_text(subject):
     text = "━━━━━━━━━━━━━━━━━━━━━\n"
     text += "👤 ПРОФИЛЬ СУБЪЕКТА\n"
     text += "━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"*{subject['full_name']}*\n"
+    text += f"{subject['full_name']}\n"
     text += f"Username: {subject['username'] or '—'}\n\n"
-    text += f"*Должности:*\n{roles_text}\n\n"
+    text += f"Должности:\n{roles_text}\n\n"
     text += f"Гражданство: {citizen_text}\n"
     text += f"В ДКД с: {joined}\n"
-    text += f"Репутация: *{subject['reputation']}*"
+    text += f"Репутация: {subject['reputation']}"
     return text
-
 
 async def build_subjects_list_text():
     subjects = await get_all_subjects()
@@ -765,33 +764,23 @@ def build_admin_confirm_reset_keyboard():
 
 
 # ===== ХЕНДЛЕРЫ =====
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+@dp.message(Command("me"))
+async def cmd_me(message: types.Message):
     user = message.from_user
     username = normalize_username(user.username)
 
-    # Проверяем, есть ли субъект в базе
     subject = None
     if username:
         subject = await get_subject_by_username(username)
     if not subject and user.id:
         subject = await get_subject_by_user_id(user.id)
 
-    if subject:
-        if subject["user_id"] != user.id and user.id:
-            await update_subject_user_id(subject["username"], user.id)
-        await message.answer(
-            f"🏛 Добро пожаловать, *{subject['full_name']}*!\n\n"
-            "Команды:\n"
-            "/me — профиль\n"
-            "/subjects — список субъектов\n"
-            "/roles — должности\n"
-            "/vote — голосование\n"
-            "/help — помощь",
-            parse_mode="Markdown"
-        )
+    if not subject:
+        await message.answer("❌ Ты не зарегистрирован. Напиши /start.")
         return
 
+    text = await build_subject_profile_text(subject)
+    await message.answer(text)
     # Новый пользователь — просим кодовое слово
     await message.answer(
         "🏛 *Добро пожаловать в ДКД!*\n\n"
