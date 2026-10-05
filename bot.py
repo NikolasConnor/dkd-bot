@@ -3297,8 +3297,8 @@ async def background_watcher(bot: Bot):
                 flags["election_end_notified"] = True
 
             try:
-                    active_e = await get_active_duma_election()
-            if active_e and active_e["ends_at"] and now_msk() >= from_db_dt(active_e["ends_at"]):
+                active_e = await get_active_duma_election()
+                if active_e and active_e["ends_at"] and now_msk() >= from_db_dt(active_e["ends_at"]):
                     winners = await finish_duma_election(active_e["id"])
                     text = "🗳 ВЫБОРЫ В ГОСДУМУ ЗАВЕРШЕНЫ!\n\n"
                     for w in winners:
@@ -3314,9 +3314,9 @@ async def background_watcher(bot: Bot):
                 print(f"duma watcher: {e}")
 
             try:
-    term = await get_active_president_term()
-    if term and term["ends_at"] and now_msk() >= from_db_dt(term["ends_at"]):
-        await force_finish_president()
+                term = await get_active_president_term()
+                if term and term["ends_at"] and now_msk() >= from_db_dt(term["ends_at"]):
+                    await force_finish_president()
                     try:
                         await bot.send_message(ADMIN_ID, "👑 Срок Президента истёк. Нужны новые выборы.")
                     except Exception:
