@@ -1704,7 +1704,9 @@ async def news_text(message: types.Message, state: FSMContext):
 
 
 # ===== КОДОВОЕ СЛОВО (ПОСЛЕ ВСЕХ FSM!) =====
-@dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
+from aiogram.filters import StateFilter
+
+@dp.message(StateFilter(None), lambda m: m.text and not m.text.startswith("/") and m.video is None)
 async def handle_text(message: types.Message):
     user = message.from_user
     username = normalize_username(user.username)
