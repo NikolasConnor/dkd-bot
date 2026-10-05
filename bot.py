@@ -22,15 +22,14 @@ TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 
 VIDEO_FILE_ID = "BAACAgIAAxkBAANLasIfw2IcWeZwXgiPqm4Ne1fHeRAAAsapAAKmCxFKxM0YkvpfMeA9BA"
 
-# ===== КАНДИДАТЫ (для выборов Президента) =====
 CANDIDATES = {
     "1": {"name": "Блошихин Кирилл Вадимович",
           "bio": "Перепил Горохова, и тот передал ему власть.",
           "type": "main"},
-    "2": {"name": "Сергей Сергеевич Косарев",
+    "2": {"name": "Косарев Сергей Сергеевич",
           "bio": "Главный генератор сбора шашлычных банкетов.",
           "type": "main"},
-    "3": {"name": "Кирилл Поселков Романович",
+    "3": {"name": "Проселков Кирилл Романович",
           "bio": "Единственный имеет девушку. Главный генератор сбора на хате.",
           "type": "main"},
     "4": {"name": "Горохов Никита Александрович",
@@ -57,7 +56,6 @@ PRELOADED_VOTES = [
     {"username": "@vozduhanprimee", "voter_name": "Бородин Тимофей Сергеевич", "candidate_id": "3"},
 ]
 
-# ===== СУБЪЕКТЫ ДКД (9 человек) =====
 SUBJECTS_INITIAL = [
     {"full_name": "Блошихин Кирилл Вадимович", "username": "@Bloha_71"},
     {"full_name": "Проселков Кирилл Романович", "username": "@G12_inthehearts"},
@@ -70,7 +68,6 @@ SUBJECTS_INITIAL = [
     {"full_name": "Горохов Никита Александрович", "username": "@Nikolas_Connor"},
 ]
 
-# ===== РОЛИ (по Конституции) =====
 ROLES_INITIAL = [
     {"code": "president", "name": "Президент", "emoji": "👑", "max_holders": 1},
     {"code": "premier", "name": "Премьер-министр", "emoji": "🏛", "max_holders": 1},
@@ -82,14 +79,12 @@ ROLES_INITIAL = [
     {"code": "subject", "name": "Субъект", "emoji": "👤", "max_holders": None},
 ]
 
-# ===== НАЧАЛЬНЫЕ РОЛИ =====
 INITIAL_ROLES = [
     {"username": "@G12_inthehearts", "role_code": "president"},
     {"username": "@Nikolas_Connor", "role_code": "premier"},
 ]
 
-# ===== КОДОВОЕ СЛОВО =====
-SECRET_WORD_VARIANTS = ["Бог Эфиопии", "бог ефиопии"]
+SECRET_WORD_VARIANTS = ["бог эфиопии", "бог ефиопии"]
 
 db_pool = None
 flags = {"test_end_notified": False, "election_end_notified": False}
@@ -99,7 +94,6 @@ flags = {"test_end_notified": False, "election_end_notified": False}
 dp = Dispatcher()
 
 
-# ===== УТИЛИТЫ =====
 def normalize_username(username):
     if not username:
         return None
@@ -168,33 +162,22 @@ def get_voter_name(user_id, username):
 
 
 def check_secret_word(text):
-    """Проверяет кодовое слово. Только именительный падеж, регистр и опечатки в буквах допускаются."""
     if not text:
         return False
     t = text.lower().strip()
-    # Убираем лишние пробелы
     t = " ".join(t.split())
-    # Проверяем варианты
-    for variant in SECRET_WORD_VARIANTS:
-        # Проверка на точное вхождение (с учётом опечаток в буквах — нечёткое сравнение)
-        # Простая проверка: если t состоит из 2 слов, первое похоже на "бог", второе на "эфиопи"
-        parts = t.split()
-        if len(parts) == 2:
-            w1, w2 = parts
-            # Первое слово — «бог» (или похожее)
-            if len(w1) == 3 and w1[0] == "б" and w1[1] == "о" and w1[2] == "г":
-                # Второе слово — «эфиопии» / «ефиопии» и т.д.
-                if w2.startswith("эфиоп") or w2.startswith("ефиоп") or w2.startswith("эфиоп"):
-                    # Проверяем, что это не другой падеж (не "бога", не "эфиопию")
-                    if w2.endswith("и") or w2.endswith("ия"):
-                        return True
+    parts = t.split()
+    if len(parts) == 2:
+        w1, w2 = parts
+        if len(w1) == 3 and w1[0] == "б" and w1[1] == "о" and w1[2] == "г":
+            if w2.startswith("эфиоп") or w2.startswith("ефиоп"):
+                if w2.endswith("и") or w2.endswith("ия"):
+                    return True
     return False
 
 
-# ===== БАЗА ДАННЫХ =====
 async def init_db():
     async with db_pool.acquire() as conn:
-        # Голоса
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS votes (
                 id SERIAL PRIMARY KEY,
@@ -209,14 +192,12 @@ async def init_db():
         await conn.execute("""
             ALTER TABLE votes ADD COLUMN IF NOT EXISTS added_by_admin BOOLEAN DEFAULT FALSE
         """)
-        # Служебные флаги
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS service_flags (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
         """)
-        # Субъекты
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS subjects (
                 id SERIAL PRIMARY KEY,
@@ -228,7 +209,6 @@ async def init_db():
                 joined_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # Роли
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS roles (
                 id SERIAL PRIMARY KEY,
@@ -240,7 +220,6 @@ async def init_db():
                 is_default BOOLEAN DEFAULT FALSE
             )
         """)
-        # Роли субъектов
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS subject_roles (
                 id SERIAL PRIMARY KEY,
@@ -368,7 +347,6 @@ async def clear_votes():
         await conn.execute("DELETE FROM service_flags WHERE key = 'preloaded_votes'")
 
 
-# ===== СУБЪЕКТЫ =====
 async def get_subject_by_user_id(user_id):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM subjects WHERE user_id = $1", user_id)
@@ -385,16 +363,6 @@ async def get_subject_by_username(username):
 async def get_all_subjects():
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT * FROM subjects ORDER BY id")
-
-
-async def create_subject(user_id, username, full_name, is_citizen=True):
-    username = normalize_username(username)
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO subjects (user_id, username, full_name, is_citizen)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (username) DO UPDATE SET user_id = $1
-        """, user_id, username, full_name, is_citizen)
 
 
 async def update_subject_user_id(username, user_id):
@@ -415,13 +383,11 @@ async def get_subject_roles(subject_id):
 
 async def assign_role(subject_id, role_id, assigned_by):
     async with db_pool.acquire() as conn:
-        # Проверка: макс. ролей у субъекта — 2
         cnt = await conn.fetchval(
             "SELECT COUNT(*) FROM subject_roles WHERE subject_id = $1", subject_id
         )
         if cnt >= 2:
             return False, "Максимум 2 должности"
-        # Проверка: макс. holders для роли
         role = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", role_id)
         if not role:
             return False, "Роль не найдена"
@@ -430,7 +396,7 @@ async def assign_role(subject_id, role_id, assigned_by):
                 "SELECT COUNT(*) FROM subject_roles WHERE role_id = $1", role_id
             )
             if holders >= role["max_holders"]:
-                return False, f"Роль «{role['name']}» занята (макс: {role['max_holders']})"
+                return False, f"Роль «{role['name']}» занята"
         await conn.execute("""
             INSERT INTO subject_roles (subject_id, role_id, assigned_by)
             VALUES ($1, $2, $3)
@@ -451,7 +417,6 @@ async def get_all_roles():
         return await conn.fetch("SELECT * FROM roles ORDER BY id")
 
 
-# ===== ТЕКСТЫ =====
 def build_ballot_text():
     status = get_election_status()
     n = now_msk()
@@ -461,35 +426,33 @@ def build_ballot_text():
         delta = ELECTION_START - n
         return (
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🗳 *БЮЛЛЕТЕНЬ ДКД*\n"
+            "🗳 БЮЛЛЕТЕНЬ ДКД\n"
             "Выборы Президента\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⏳ *Выборы ещё не начались.*\n\n"
+            "⏳ Выборы ещё не начались.\n\n"
             "Старт: 04.10.2026, 14:00 МСК\n"
             "Конец: 07.10.2026, 20:00 МСК\n\n"
-            f"До старта: *{format_delta(delta)}*"
+            f"До старта: {format_delta(delta)}"
         )
 
     if status == "during":
         delta = ELECTION_END - n
         return (
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🗳 *БЮЛЛЕТЕНЬ ДКД*\n"
+            "🗳 БЮЛЛЕТЕНЬ ДКД\n"
             "Выборы Президента\n"
             f"Дата: {date} МСК\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"⏳ До конца голосования: *{format_delta(delta)}*\n\n"
+            f"⏳ До конца голосования: {format_delta(delta)}\n\n"
             "Нажми на кнопку, чтобы отдать голос.\n"
             "Один субъект — один голос."
         )
 
     return (
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🗳 *БЮЛЛЕТЕНЬ ДКД*\n"
+        "🗳 БЮЛЛЕТЕНЬ ДКД\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔒 *Выборы завершены.*\n\n"
-        "Голосование проходило с 04.10.2026 14:00\n"
-        "по 07.10.2026 20:00 МСК.\n\n"
+        "🔒 Выборы завершены.\n\n"
         "Смотри результаты: /results"
     )
 
@@ -574,11 +537,11 @@ async def build_status_text():
             not_voted_list.append(f"❌ {info['name']} ({uname})")
 
     text = "━━━━━━━━━━━━━━━━━━━━━\n👥 СТАТУС ГОЛОСОВАНИЯ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"*Проголосовали ({len(voted_list)}):*\n"
+    text += f"Проголосовали ({len(voted_list)}):\n"
     text += "\n".join(voted_list) if voted_list else "—"
-    text += f"\n\n*Не голосовали ({len(not_voted_list)}):*\n"
+    text += f"\n\nНе голосовали ({len(not_voted_list)}):\n"
     text += "\n".join(not_voted_list) if not_voted_list else "—"
-    text += f"\n\n*Всего: {len(voted_list)} / {len(VOTERS)}*"
+    text += f"\n\nВсего: {len(voted_list)} / {len(VOTERS)}"
     return text
 
 
@@ -593,7 +556,7 @@ async def build_votes_list_text():
     text = "━━━━━━━━━━━━━━━━━━━━━\n📋 СПИСОК ГОЛОСОВ\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     for cid, c in CANDIDATES.items():
         voters = by_candidate[cid]
-        text += f"*{cid}. {c['name']}* — {len(voters)} голос(ов)\n"
+        text += f"{cid}. {c['name']} — {len(voters)} голос(ов)\n"
         for voter in voters:
             text += f"  • {voter}\n"
         text += "\n"
@@ -603,7 +566,6 @@ async def build_votes_list_text():
 async def build_subject_profile_text(subject):
     roles = await get_subject_roles(subject["id"])
     roles_text = "\n".join([f"{r['emoji']} {r['name']}" for r in roles]) if roles else "👤 Субъект"
-
     joined = subject["joined_at"].strftime("%d.%m.%Y") if subject["joined_at"] else "—"
     citizen_text = "✅ Есть" if subject["is_citizen"] else "❌ Нет"
 
@@ -618,13 +580,14 @@ async def build_subject_profile_text(subject):
     text += f"Репутация: {subject['reputation']}"
     return text
 
+
 async def build_subjects_list_text():
     subjects = await get_all_subjects()
     text = "━━━━━━━━━━━━━━━━━━━━━\n👥 СУБЪЕКТЫ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     for s in subjects:
         roles = await get_subject_roles(s["id"])
         roles_short = ", ".join([r["name"] for r in roles]) if roles else "Субъект"
-        text += f"• *{s['full_name']}*\n  {roles_short}\n\n"
+        text += f"• {s['full_name']}\n  {roles_short}\n\n"
     text += f"Всего: {len(subjects)}"
     return text
 
@@ -634,11 +597,10 @@ async def build_roles_list_text():
     text = "━━━━━━━━━━━━━━━━━━━━━\n🎭 ДОЛЖНОСТИ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     for r in roles:
         max_text = f"макс: {r['max_holders']}" if r["max_holders"] else "без ограничений"
-        text += f"{r['emoji']} *{r['name']}* ({max_text})\n"
+        text += f"{r['emoji']} {r['name']} ({max_text})\n"
     return text
 
 
-# ===== АДМИН-ПАНЕЛЬ =====
 def build_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Субъекты", callback_data="admin_subjects")],
@@ -666,7 +628,7 @@ async def build_admin_subjects_list_keyboard():
     buttons = []
     for s in subjects:
         buttons.append([InlineKeyboardButton(
-            text=f"{s['full_name']}",
+            text=s['full_name'],
             callback_data=f"admin_subj_view|{s['id']}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subjects")])
@@ -678,7 +640,7 @@ async def build_admin_assign_role_subj_keyboard():
     buttons = []
     for s in subjects:
         buttons.append([InlineKeyboardButton(
-            text=f"{s['full_name']}",
+            text=s['full_name'],
             callback_data=f"admin_assign_subj|{s['id']}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subjects")])
@@ -702,7 +664,7 @@ async def build_admin_remove_role_subj_keyboard():
     buttons = []
     for s in subjects:
         buttons.append([InlineKeyboardButton(
-            text=f"{s['full_name']}",
+            text=s['full_name'],
             callback_data=f"admin_remove_subj|{s['id']}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subjects")])
@@ -763,7 +725,50 @@ def build_admin_confirm_reset_keyboard():
     ])
 
 
-# ===== ХЕНДЛЕРЫ =====
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user = message.from_user
+    username = normalize_username(user.username)
+
+    subject = None
+    if username:
+        subject = await get_subject_by_username(username)
+    if not subject and user.id:
+        subject = await get_subject_by_user_id(user.id)
+
+    if subject:
+        if subject["user_id"] != user.id and user.id:
+            await update_subject_user_id(subject["username"], user.id)
+        await message.answer(
+            f"🏛 Добро пожаловать, {subject['full_name']}!\n\n"
+            "Команды:\n"
+            "/me — профиль\n"
+            "/subjects — список субъектов\n"
+            "/roles — должности\n"
+            "/vote — голосование\n"
+            "/help — помощь"
+        )
+        return
+
+    await message.answer(
+        "🏛 Добро пожаловать в ДКД!\n\n"
+        "Ты не в списке субъектов.\n"
+        "Чтобы зарегистрироваться, отправь кодовое слово."
+    )
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer(
+        "📖 Помощь\n\n"
+        "/me — профиль субъекта\n"
+        "/subjects — список субъектов\n"
+        "/roles — список должностей\n"
+        "/vote — голосование\n\n"
+        "Выборы Президента: 04.10.2026 14:00 — 07.10.2026 20:00 МСК."
+    )
+
+
 @dp.message(Command("me"))
 async def cmd_me(message: types.Message):
     user = message.from_user
@@ -781,66 +786,25 @@ async def cmd_me(message: types.Message):
 
     text = await build_subject_profile_text(subject)
     await message.answer(text)
-    # Новый пользователь — просим кодовое слово
-    await message.answer(
-        "🏛 *Добро пожаловать в ДКД!*\n\n"
-        "Ты не в списке субъектов.\n"
-        "Чтобы зарегистрироваться, отправь *кодовое слово*.",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    await message.answer(
-        "📖 *Помощь*\n\n"
-        "/me — профиль субъекта\n"
-        "/subjects — список субъектов\n"
-        "/roles — список должностей\n"
-        "/vote — голосование\n\n"
-        "Выборы Президента: 04.10.2026 14:00 — 07.10.2026 20:00 МСК.",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("me"))
-async def cmd_me(message: types.Message):
-    user = message.from_user
-    username = normalize_username(user.username)
-
-    subject = None
-    if username:
-        subject = await get_subject_by_username(username)
-    if not subject and user.id:
-        subject = await get_subject_by_user_id(user.id)
-
-    if not subject:
-        await message.answer("❌ Ты не зарегистрирован. Напиши /start.")
-        return
-
-    text = await build_subject_profile_text(subject)
-    await message.answer(text, parse_mode="Markdown")
 
 
 @dp.message(Command("subjects"))
 async def cmd_subjects(message: types.Message):
     text = await build_subjects_list_text()
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)
 
 
 @dp.message(Command("roles"))
 async def cmd_roles(message: types.Message):
     text = await build_roles_list_text()
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)
 
 
-# ===== ОБРАБОТКА КОДОВОГО СЛОВА =====
-@dp.message(lambda m: m.text and not m.text.startswith("/"))
+@dp.message(lambda m: m.text and not m.text.startswith("/") and m.video is None)
 async def handle_text(message: types.Message):
     user = message.from_user
     username = normalize_username(user.username)
 
-    # Проверяем, есть ли субъект
     subject = None
     if username:
         subject = await get_subject_by_username(username)
@@ -848,55 +812,45 @@ async def handle_text(message: types.Message):
         subject = await get_subject_by_user_id(user.id)
 
     if subject:
-        # Уже зарегистрирован — игнорируем
         return
 
-    # Проверяем кодовое слово
     if check_secret_word(message.text):
         if not username:
             await message.answer("❌ У тебя нет username в Telegram. Установи username и попробуй снова.")
             return
-        # Регистрируем как нового субъекта (НЕ гражданина — ждёт одобрения Президента)
-        # Но пока просто создаём запись
         await message.answer(
             "✅ Кодовое слово принято!\n\n"
-            "Ты зарегистрирован как *новый субъект*.\n"
+            "Ты зарегистрирован как новый субъект.\n"
             "Ожидай одобрения Президента для получения гражданства.\n\n"
             "Пока можешь пользоваться:\n"
             "/me — профиль\n"
-            "/subjects — список субъектов",
-            parse_mode="Markdown"
+            "/subjects — список субъектов"
         )
-        # Уведомляем админа
         try:
             await message.bot.send_message(
                 ADMIN_ID,
-                f"📥 *Новый субъект*\n\n"
-                f"ФИО: (не указано)\n"
+                f"📥 Новый субъект\n\n"
                 f"Username: {username}\n"
                 f"User ID: {user.id}\n\n"
-                f"Ждёт одобрения гражданства.",
-                parse_mode="Markdown"
+                f"Ждёт одобрения гражданства."
             )
         except Exception as e:
             print(f"Не смог уведомить админа: {e}")
     else:
         await message.answer(
             "❌ Неверное кодовое слово.\n\n"
-            "Попробуй снова. Подсказка: два слова, связанные с Эфиопией и Богом."
+            "Попробуй снова. Подсказка: два слова, связанных с Эфиопией и Богом."
         )
 
 
-# ===== АДМИН-ПАНЕЛЬ =====
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⛔ Только админ.")
         return
     await message.answer(
-        "━━━━━━━━━━━━━━━━━━━━━\n🛠 *АДМИН-ПАНЕЛЬ ДКД*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
-        reply_markup=build_admin_keyboard(),
-        parse_mode="Markdown"
+        "━━━━━━━━━━━━━━━━━━━━━\n🛠 АДМИН-ПАНЕЛЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+        reply_markup=build_admin_keyboard()
     )
 
 
@@ -907,9 +861,8 @@ async def admin_back(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n🛠 *АДМИН-ПАНЕЛЬ ДКД*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
-            reply_markup=build_admin_keyboard(),
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n🛠 АДМИН-ПАНЕЛЬ ДКД\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_keyboard()
         )
         await callback.answer()
     except Exception as e:
@@ -927,13 +880,29 @@ async def admin_subjects(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n👥 *СУБЪЕКТЫ*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
-            reply_markup=build_admin_subjects_keyboard(),
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n👥 СУБЪЕКТЫ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери действие:",
+            reply_markup=build_admin_subjects_keyboard()
         )
         await callback.answer()
     except Exception as e:
-        print(f"Ошибка admin_subjects: {e}")
+        print(f"Ошибка: {e}")
+        try:
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "admin_roles")
+async def admin_roles(callback: types.CallbackQuery):
+    try:
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Только админ.", show_alert=True)
+            return
+        text = await build_roles_list_text()
+        await callback.message.answer(text)
+        await callback.answer()
+    except Exception as e:
+        print(f"Ошибка: {e}")
         try:
             await callback.answer(f"Ошибка: {e}", show_alert=True)
         except Exception:
@@ -948,9 +917,8 @@ async def admin_subjects_list(callback: types.CallbackQuery):
             return
         kb = await build_admin_subjects_list_keyboard()
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n👥 *СУБЪЕКТЫ*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
-            reply_markup=kb,
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n👥 СУБЪЕКТЫ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
+            reply_markup=kb
         )
         await callback.answer()
     except Exception as e:
@@ -974,7 +942,7 @@ async def admin_subj_view(callback: types.CallbackQuery):
             await callback.answer("Не найден.", show_alert=True)
             return
         text = await build_subject_profile_text(subject)
-        await callback.message.answer(text, parse_mode="Markdown")
+        await callback.message.answer(text)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -992,9 +960,8 @@ async def admin_assign_role_subj(callback: types.CallbackQuery):
             return
         kb = await build_admin_assign_role_subj_keyboard()
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n➕ *ВЫДАТЬ ДОЛЖНОСТЬ*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
-            reply_markup=kb,
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n➕ ВЫДАТЬ ДОЛЖНОСТЬ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
+            reply_markup=kb
         )
         await callback.answer()
     except Exception as e:
@@ -1014,9 +981,8 @@ async def admin_assign_subj(callback: types.CallbackQuery):
         sid = int(callback.data.split("|")[1])
         kb = await build_admin_assign_role_keyboard(sid)
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n➕ *ВЫБЕРИ ДОЛЖНОСТЬ*\n━━━━━━━━━━━━━━━━━━━━━\n\nКакую должность выдать?",
-            reply_markup=kb,
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n➕ ВЫБЕРИ ДОЛЖНОСТЬ\n━━━━━━━━━━━━━━━━━━━━━\n\nКакую должность выдать?",
+            reply_markup=kb
         )
         await callback.answer()
     except Exception as e:
@@ -1043,11 +1009,11 @@ async def admin_assign_role(callback: types.CallbackQuery):
             async with db_pool.acquire() as conn:
                 subject = await conn.fetchrow("SELECT * FROM subjects WHERE id = $1", sid)
                 role = await conn.fetchrow("SELECT * FROM roles WHERE id = $1", rid)
-            text = f"✅ *ГОТОВО!*\n\n{subject['full_name']} назначен:\n{role['emoji']} *{role['name']}*"
+            text = f"✅ ГОТОВО!\n\n{subject['full_name']} назначен:\n{role['emoji']} {role['name']}"
             try:
-                await callback.message.edit_text(text, parse_mode="Markdown")
+                await callback.message.edit_text(text)
             except Exception:
-                await callback.message.answer(text, parse_mode="Markdown")
+                await callback.message.answer(text)
         else:
             await callback.message.answer(f"❌ {msg}")
         await callback.answer()
@@ -1067,9 +1033,8 @@ async def admin_remove_role_subj(callback: types.CallbackQuery):
             return
         kb = await build_admin_remove_role_subj_keyboard()
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n➖ *СНЯТЬ ДОЛЖНОСТЬ*\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
-            reply_markup=kb,
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n➖ СНЯТЬ ДОЛЖНОСТЬ\n━━━━━━━━━━━━━━━━━━━━━\n\nВыбери субъекта:",
+            reply_markup=kb
         )
         await callback.answer()
     except Exception as e:
@@ -1089,9 +1054,8 @@ async def admin_remove_subj(callback: types.CallbackQuery):
         sid = int(callback.data.split("|")[1])
         kb = await build_admin_remove_role_keyboard(sid)
         await callback.message.edit_text(
-            "━━━━━━━━━━━━━━━━━━━━━\n➖ *ВЫБЕРИ ДОЛЖНОСТЬ ДЛЯ СНЯТИЯ*\n━━━━━━━━━━━━━━━━━━━━━",
-            reply_markup=kb,
-            parse_mode="Markdown"
+            "━━━━━━━━━━━━━━━━━━━━━\n➖ ВЫБЕРИ ДОЛЖНОСТЬ ДЛЯ СНЯТИЯ\n━━━━━━━━━━━━━━━━━━━━━",
+            reply_markup=kb
         )
         await callback.answer()
     except Exception as e:
@@ -1112,7 +1076,7 @@ async def admin_remove_role(callback: types.CallbackQuery):
         sid = int(parts[1])
         rid = int(parts[2])
         await remove_role(sid, rid)
-        await callback.message.edit_text("✅ Должность снята.", parse_mode="Markdown")
+        await callback.message.edit_text("✅ Должность снята.")
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1122,7 +1086,6 @@ async def admin_remove_role(callback: types.CallbackQuery):
             pass
 
 
-# ===== ВЫБОРЫ =====
 @dp.callback_query(lambda c: c.data == "admin_results")
 async def admin_results(callback: types.CallbackQuery):
     try:
@@ -1130,7 +1093,7 @@ async def admin_results(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         text = await build_results_text()
-        await callback.message.answer(text, parse_mode="Markdown")
+        await callback.message.answer(text)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1147,7 +1110,7 @@ async def admin_status(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         text = await build_status_text()
-        await callback.message.answer(text, parse_mode="Markdown")
+        await callback.message.answer(text)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1164,7 +1127,7 @@ async def admin_votes(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         text = await build_votes_list_text()
-        await callback.message.answer(text, parse_mode="Markdown")
+        await callback.message.answer(text)
         await callback.answer()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1181,9 +1144,8 @@ async def admin_add_vote(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         await callback.message.edit_text(
-            "✍️ *ВНЕСТИ ГОЛОС*\n\nЗа кого вносим голос?",
-            reply_markup=build_admin_add_vote_keyboard(),
-            parse_mode="Markdown"
+            "✍️ ВНЕСТИ ГОЛОС\n\nЗа кого вносим голос?",
+            reply_markup=build_admin_add_vote_keyboard()
         )
         await callback.answer()
     except Exception as e:
@@ -1206,9 +1168,8 @@ async def admin_addvote_subj(callback: types.CallbackQuery):
             await callback.answer("Не найден.", show_alert=True)
             return
         await callback.message.edit_text(
-            f"✍️ *ГОЛОС ЗА: {info['name']}*\n\nЗа какого кандидата?",
-            reply_markup=build_admin_add_candidate_keyboard(username),
-            parse_mode="Markdown"
+            f"✍️ ГОЛОС ЗА: {info['name']}\n\nЗа какого кандидата?",
+            reply_markup=build_admin_add_candidate_keyboard(username)
         )
         await callback.answer()
     except Exception as e:
@@ -1235,9 +1196,9 @@ async def admin_addvote_cand(callback: types.CallbackQuery):
         await save_vote(-1, username, info["name"], cid, added_by_admin=True)
         text = f"✅ Голос внесён.\n\n{info['name']} → {CANDIDATES[cid]['name']}"
         try:
-            await callback.message.edit_text(text, parse_mode="Markdown")
+            await callback.message.edit_text(text)
         except Exception:
-            await callback.message.answer(text, parse_mode="Markdown")
+            await callback.message.answer(text)
         await callback.answer("Готово!")
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1254,9 +1215,8 @@ async def admin_del_vote(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         await callback.message.edit_text(
-            "🗑 *УДАЛИТЬ ГОЛОС*\n\nУ кого удалить?",
-            reply_markup=build_admin_del_vote_keyboard(),
-            parse_mode="Markdown"
+            "🗑 УДАЛИТЬ ГОЛОС\n\nУ кого удалить?",
+            reply_markup=build_admin_del_vote_keyboard()
         )
         await callback.answer()
     except Exception as e:
@@ -1281,9 +1241,9 @@ async def admin_delvote(callback: types.CallbackQuery):
         await delete_vote_by_username(username)
         text = f"✅ Голос удалён: {info['name']}"
         try:
-            await callback.message.edit_text(text, parse_mode="Markdown")
+            await callback.message.edit_text(text)
         except Exception:
-            await callback.message.answer(text, parse_mode="Markdown")
+            await callback.message.answer(text)
         await callback.answer("Готово!")
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -1300,9 +1260,8 @@ async def admin_reset_confirm(callback: types.CallbackQuery):
             await callback.answer("Только админ.", show_alert=True)
             return
         await callback.message.edit_text(
-            "⚠️ *СБРОСИТЬ ВСЁ?*\n\nЭто удалит все голоса.",
-            reply_markup=build_admin_confirm_reset_keyboard(),
-            parse_mode="Markdown"
+            "⚠️ СБРОСИТЬ ВСЁ?\n\nЭто удалит все голоса.",
+            reply_markup=build_admin_confirm_reset_keyboard()
         )
         await callback.answer()
     except Exception as e:
@@ -1330,7 +1289,6 @@ async def admin_reset_yes(callback: types.CallbackQuery):
             pass
 
 
-# ===== ГОЛОСОВАНИЕ =====
 @dp.message(Command("vote"))
 async def cmd_vote(message: types.Message):
     try:
@@ -1344,7 +1302,7 @@ async def cmd_vote(message: types.Message):
 
         status = get_election_status()
         if not tester and status != "during":
-            await message.answer(build_ballot_text(), parse_mode="Markdown")
+            await message.answer(build_ballot_text())
             return
 
         if not tester:
@@ -1355,11 +1313,10 @@ async def cmd_vote(message: types.Message):
                 await message.answer("⚠️ Ты уже голосовал.")
                 return
 
-        prefix = "🧪 *ТЕСТОВЫЙ РЕЖИМ*\n\n" if tester else ""
+        prefix = "🧪 ТЕСТОВЫЙ РЕЖИМ\n\n" if tester else ""
         await message.answer(
             prefix + build_ballot_text(),
-            reply_markup=build_ballot_keyboard(),
-            parse_mode="Markdown"
+            reply_markup=build_ballot_keyboard()
         )
     except Exception as e:
         print(f"Ошибка cmd_vote: {e}")
@@ -1416,7 +1373,7 @@ async def process_vote(callback: types.CallbackQuery):
 
         await save_vote(user.id, username, voter_name, candidate_id)
 
-        suffix = "\n\n_Можешь голосовать ещё раз._" if tester else ""
+        suffix = "\n\nМожешь голосовать ещё раз." if tester else ""
         caption = (
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "✅ ГОЛОС ПРИНЯТ!\n"
@@ -1456,7 +1413,7 @@ async def cmd_results(message: types.Message):
         await message.answer("📊 Пока никто не голосовал.")
         return
     text = await build_results_text()
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)
 
 
 @dp.message(Command("reset"))
@@ -1472,13 +1429,9 @@ async def cmd_reset(message: types.Message):
 async def get_video_id(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.answer(
-        f"📹 file_id:\n\n`{message.video.file_id}`",
-        parse_mode="Markdown"
-    )
+    await message.answer(f"📹 file_id:\n\n{message.video.file_id}")
 
 
-# ===== ФОНОВАЯ ЗАДАЧА =====
 async def background_watcher(bot: Bot):
     global flags
     while True:
@@ -1515,7 +1468,6 @@ async def background_watcher(bot: Bot):
         await asyncio.sleep(30)
 
 
-# ===== ЗАПУСК =====
 async def main():
     global db_pool
     if not BOT_TOKEN:
