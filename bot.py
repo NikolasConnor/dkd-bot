@@ -15,7 +15,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 7934244888
 MSK = timezone(timedelta(hours=3))
 ELECTION_START = datetime(2026, 10, 4, 14, 0, tzinfo=MSK)
-ELECTION_END = datetime(2026, 10, 7, 20, 0, tzinfo=MSK)
+ELECTION_END = datetime(2026, 10, 6, 18, 0, tzinfo=MSK)
 TEST_USERNAMES = {"@Nikolas_Connor"}
 TEST_MODE_END = datetime(2026, 10, 4, 13, 0, tzinfo=MSK)
 VIDEO_FILE_ID = "BAACAgIAAxkBAANLasIfw2IcWeZwXgiPqm4Ne1fHeRAAAsapAAKmCxFKxM0YkvpfMeA9BA"
