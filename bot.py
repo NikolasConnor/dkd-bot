@@ -79,8 +79,8 @@ class PartyForm(StatesGroup):
     waiting_name = State()
     waiting_emoji = State()
     waiting_description = State()
-
-
+    
+    
 class LawForm(StatesGroup):
     waiting_title = State()
     waiting_description = State()
@@ -98,7 +98,12 @@ class NewsForm(StatesGroup):
 
 class ElectionForm(StatesGroup):
     waiting_date_end = State()
+    
+class ProfileForm(StatesGroup):
+    waiting_fio = State()
 
+class BroadcastForm(StatesGroup):
+    waiting_text = State()
 
 dp = Dispatcher()
 
