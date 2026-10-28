@@ -1092,9 +1092,94 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                     if removed: await conn.execute('INSERT INTO news(text) VALUES($1)', f'Гражданин @{username} покинул партию.')
                 await edit('Вы вышли из партии.' if removed else 'Вы не состоите в партии.', [[('⬅️ К партиям','parties')]])
             elif data == 'parties':
-                async with pool.acquire() as conn: rows = await conn.fetch("SELECT id,name,emoji,description,leader_username FROM parties WHERE status='active' ORDER BY id")
-                body = '\n'.join(f"{r['emoji']} <b>{html_escape(r['name'])}</b> — {html_escape((r['description'] or '')[:180])} (лидер: @{html_escape(r['leader_username'] or 'не назначен')})" for r in rows[:8]) or 'Активных партий нет.'
-                await edit('🎭 <b>Партии</b>\n'+body, [[('➕ Создать партию','party_create')],[('🤝 Вступить в партию','party_join')],[('👥 Моя партия','my_party')],[('🧾 Список кандидатов','party_my_list')],[('⬅️ Назад','main')]])
+                # Party directory: member counts and a separate details page for every party.
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch("""SELECT p.id,p.name,p.emoji,p.description,p.leader_username,p.leader_user_id,
+                        (SELECT COUNT(*) FROM party_members pm WHERE pm.party_id=p.id) AS member_count
+                        FROM parties p WHERE p.status='active' ORDER BY p.name""")
+                    my_membership = await conn.fetchrow("""SELECT p.id,p.name FROM party_members pm JOIN parties p ON p.id=pm.party_id
+                        WHERE p.status='active' AND (pm.user_id=$1 OR LOWER(pm.username)=LOWER($2)) LIMIT 1""", uid, normalize_username(callback.from_user.username, uid))
+                body = 'Выберите партию, чтобы посмотреть её состав, лидера и подать заявку на вступление.\n\n'
+                if rows:
+                    body += '\n'.join(f"{r['emoji']} <b>{html_escape(r['name'])}</b> · 👥 {r['member_count']} чел." for r in rows[:25])
+                    if len(rows) > 25:
+                        body += f'\n\nПоказаны первые 25 из {len(rows)} партий.'
+                else:
+                    body += 'Активных партий пока нет. Вы можете предложить создать первую.'
+                buttons = [[(f"{r['emoji']} {r['name'][:28]} · {r['member_count']}", f"party_view:{r['id']}")] for r in rows[:25]]
+                buttons += [[('➕ Подать заявку на создание','party_create')], [('👥 Моя партия','my_party')], [('🧾 Список кандидатов','party_my_list')], [('⬅️ Назад','main')]]
+                if my_membership:
+                    body += f'\n\n<b>Ваша партия:</b> {html_escape(my_membership["name"])}'
+                await edit('🎭 <b>Партии государства</b>\n\n' + body, buttons)
+            elif data.startswith('party_view:'):
+                party_id = int(data.split(':',1)[1])
+                async with pool.acquire() as conn:
+                    party = await conn.fetchrow("""SELECT p.id,p.name,p.emoji,p.description,p.leader_username,p.leader_user_id,
+                        (SELECT COUNT(*) FROM party_members pm WHERE pm.party_id=p.id) AS member_count
+                        FROM parties p WHERE p.id=$1 AND p.status='active'""", party_id)
+                    members = await conn.fetch("""SELECT pm.user_id,pm.username,pm.joined_at,s.full_name,
+                        CASE WHEN pm.user_id=p.leader_user_id OR LOWER(pm.username)=LOWER(COALESCE(p.leader_username,'')) THEN TRUE ELSE FALSE END AS is_leader
+                        FROM party_members pm JOIN parties p ON p.id=pm.party_id
+                        LEFT JOIN subjects s ON s.user_id=pm.user_id OR LOWER(s.username)=LOWER(pm.username)
+                        WHERE pm.party_id=$1 ORDER BY is_leader DESC,COALESCE(s.full_name,pm.username)""", party_id)
+                    already_member = await conn.fetchval("SELECT 1 FROM party_members WHERE (user_id=$1) OR LOWER(username)=LOWER($2) LIMIT 1", uid, normalize_username(callback.from_user.username, uid))
+                    pending = await conn.fetchval("SELECT 1 FROM applications WHERE type='join_party' AND status='pending' AND author_user_id=$1 AND data->>'party_id'=$2 LIMIT 1", uid, str(party_id))
+                if not party:
+                    await edit('Эта партия не найдена или уже распущена.', [[('⬅️ К списку партий','parties')]])
+                else:
+                    leader_name = 'не назначен'
+                    if party['leader_user_id']:
+                        leader_person = await subject(pool, party['leader_user_id'])
+                        if leader_person:
+                            leader_name = f"{leader_person['full_name']} (@{leader_person['username']})"
+                    elif party['leader_username']:
+                        leader_name = '@' + party['leader_username']
+                    roster = []
+                    for m in members:
+                        full = m['full_name'] or ('@' + m['username'])
+                        marker = '👑 ' if m['is_leader'] else '• '
+                        handle = f" (@{m['username']})" if m['username'] and not m['username'].startswith('id') else ''
+                        roster.append(marker + html_escape(full) + html_escape(handle))
+                    details = f"{party['emoji']} <b>{html_escape(party['name'])}</b>\n{html_escape(party['description'] or 'Описание не добавлено.')}\n\n👑 <b>Лидер:</b> {html_escape(leader_name)}\n👥 <b>Участников:</b> {party['member_count']}\n\n<b>Состав партии:</b>\n" + ('\n'.join(roster[:70]) if roster else 'В списке участников пока никого нет.')
+                    if len(roster) > 70:
+                        details += f'\n… и ещё {len(roster)-70} участников.'
+                    buttons = []
+                    if not already_member and not pending:
+                        buttons.append([('🤝 Подать заявку на вступление', f'party_apply:{party_id}')])
+                    elif pending:
+                        details += '\n\n🟡 Ваша заявка на вступление ожидает решения.'
+                    elif already_member:
+                        details += '\n\n✅ Вы уже состоите в партии.'
+                    buttons.append([('⬅️ К списку партий','parties')])
+                    await edit(details, buttons)
+            elif data.startswith('party_apply:'):
+                party_id = int(data.split(':',1)[1])
+                username = normalize_username(callback.from_user.username, uid)
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        party = await conn.fetchrow("SELECT id,name,leader_user_id,leader_username FROM parties WHERE id=$1 AND status='active' FOR UPDATE", party_id)
+                        if not party:
+                            raise ValueError('Партия больше не активна.')
+                        existing = await conn.fetchval("SELECT 1 FROM party_members WHERE user_id=$1 OR LOWER(username)=LOWER($2) LIMIT 1", uid, username)
+                        pending = await conn.fetchval("SELECT 1 FROM applications WHERE type='join_party' AND status='pending' AND author_user_id=$1 AND data->>'party_id'=$2 LIMIT 1", uid, str(party_id))
+                        if existing:
+                            raise ValueError('Вы уже состоите в партии.')
+                        if pending:
+                            raise ValueError('Ваша заявка уже ожидает решения.')
+                        app = await conn.fetchrow("""INSERT INTO applications(type,author_username,author_user_id,data,status)
+                            VALUES('join_party',$1,$2,$3::jsonb,'pending') RETURNING id""", username, uid,
+                            json.dumps({'party_id': party_id, 'party_name': party['name'], 'user_id': uid}))
+                await edit(f"🟡 Заявка №{app['id']} на вступление в партию «{html_escape(party['name'])}» отправлена лидеру.", [[('⬅️ К партии',f'party_view:{party_id}'),('🎭 Все партии','parties')]])
+                leader_id = party['leader_user_id']
+                if leader_id:
+                    try:
+                        await bot.send_message(leader_id, f"📋 Новая заявка №{app['id']} на вступление в партию «{html_escape(party['name'])}» от @{html_escape(username)}. Откройте 🎭 Партии → 👥 Моя партия → 📋 Заявки на вступление.")
+                    except TelegramAPIError:
+                        pass
+                try:
+                    await bot.send_message(ADMIN_ID, f"Новая заявка на вступление №{app['id']} в партию «{html_escape(party['name'])}».")
+                except TelegramAPIError:
+                    pass
             elif data == 'party_create':
                 await state.set_state(Form.create_party_name)
                 if msg: await msg.answer('Введите название партии:')
@@ -1314,7 +1399,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 if msg: await msg.answer('Введите окончание выборов по МСК, например 31.12.2026 23:59, или длительность в часах (0,1–720).')
             elif data == 'president_panel':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
-                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('👔 Назначить должностное лицо','appoint_menu')],[('🗳 Назначить выборы в Госдуму','pres_duma_start')],[('⚖️ Список правительства','government')],[('📑 Законы на подпись','pres_laws')],[('📋 Заявки на гражданство','president_apps')],[('🎭 Заявки на партии','president_party_apps')],[('⬅️ Назад','main')]])
+                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('📣 Призыв вступать в партии','address_parties')],[('👔 Назначить должностное лицо','appoint_menu')],[('🗳 Назначить выборы в Госдуму','pres_duma_start')],[('⚖️ Список правительства','government')],[('📑 Законы на подпись','pres_laws')],[('📋 Заявки на гражданство','president_apps')],[('🎭 Заявки на партии','president_party_apps')],[('⬅️ Назад','main')]])
             elif data == 'president_apps':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 async with pool.acquire() as conn:
@@ -1342,10 +1427,14 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 await state.set_state(Form.decree_title)
                 if msg: await msg.answer('Введите заголовок указа:')
-            elif data == 'address_new':
+            elif data in {'address_new', 'address_parties'}:
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 await state.set_state(Form.address_text)
-                if msg: await msg.answer('Введите текст обращения к народу:')
+                if msg:
+                    if data == 'address_parties':
+                        await msg.answer('Введите призыв к гражданам вступать в партии. Сообщение будет отправлено всем гражданам и опубликовано в газете. Например: «Граждане! Ознакомьтесь с программами партий и подавайте заявки на вступление через меню 🎭 Партии».')
+                    else:
+                        await msg.answer('Введите текст обращения к народу. Оно будет отправлено всем гражданам и опубликовано в газете:')
             elif data == 'minister_new':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 async with pool.acquire() as conn: citizens = await conn.fetch("SELECT user_id,username,full_name FROM subjects WHERE is_citizen=TRUE ORDER BY full_name LIMIT 50")
