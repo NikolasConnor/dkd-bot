@@ -165,16 +165,34 @@ async def init_db(pool: asyncpg.Pool) -> None:
         async with conn.transaction():
             for statement in ddl:
                 await conn.execute(statement)
-            # Upgrade databases created by older versions of this bot.
-            # Older builds stored presidential votes without an election_id.
+            # Idempotent migration for databases created by older versions of this bot.
             await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS election_id BIGINT")
+            await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT ''")
+            await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS voter_name TEXT NOT NULL DEFAULT ''")
+            await conn.execute("ALTER TABLE votes ADD COLUMN IF NOT EXISTS candidate_id TEXT NOT NULL DEFAULT '5'")
+
+            # Archive legacy votes without an election in a finished election.
             legacy_votes = await conn.fetchval("SELECT COUNT(*) FROM votes WHERE election_id IS NULL")
             if legacy_votes:
                 legacy_election = await conn.fetchrow(
                     "INSERT INTO pres_elections(ends_at,status) VALUES($1,'finished') RETURNING id",
                     to_db_dt(datetime.now(timezone.utc)),
                 )
-                await conn.execute("UPDATE votes SET election_id=$1 WHERE election_id IS NULL", legacy_election['id'])
+                await conn.execute(
+                    "UPDATE votes SET election_id=$1 WHERE election_id IS NULL",
+                    legacy_election['id'],
+                )
+
+            # Old versions could write placeholder Telegram IDs (-1), including duplicates.
+            # Remove invalid IDs and deduplicate old records before creating unique indexes.
+            await conn.execute("DELETE FROM votes WHERE user_id <= 0 OR election_id IS NULL")
+            await conn.execute("""
+                DELETE FROM votes older
+                USING votes newer
+                WHERE older.election_id = newer.election_id
+                  AND older.user_id = newer.user_id
+                  AND older.ctid < newer.ctid
+            """)
             await conn.execute("ALTER TABLE votes ALTER COLUMN election_id SET NOT NULL")
             await conn.execute("ALTER TABLE votes DROP CONSTRAINT IF EXISTS votes_user_id_key")
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS votes_election_user_uq ON votes(election_id,user_id)")
@@ -187,7 +205,22 @@ async def init_db(pool: asyncpg.Pool) -> None:
                     ALTER TABLE pres_elections ALTER COLUMN ends_at TYPE TIMESTAMP WITHOUT TIME ZONE USING ends_at AT TIME ZONE 'UTC';
                 END IF;
             END $$""")
+            # Repair old case-sensitive duplicates before adding case-insensitive constraints.
+            await conn.execute("""
+                DELETE FROM party_members older
+                USING party_members newer
+                WHERE LOWER(older.username) = LOWER(newer.username)
+                  AND older.ctid > newer.ctid
+            """)
+            await conn.execute("""
+                DELETE FROM duma_votes older
+                USING duma_votes newer
+                WHERE older.election_id = newer.election_id
+                  AND LOWER(older.voter_username) = LOWER(newer.voter_username)
+                  AND older.ctid < newer.ctid
+            """)
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS party_members_username_lower_uq ON party_members (LOWER(username))")
+            await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS duma_votes_election_voter_uq ON duma_votes (election_id, LOWER(voter_username))")
             for code, name, emoji, max_holders in DEFAULT_ROLES:
                 await conn.execute("""INSERT INTO roles(code,name,emoji,max_holders) VALUES($1,$2,$3,$4)
                     ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name, emoji=EXCLUDED.emoji, max_holders=EXCLUDED.max_holders""",
@@ -840,7 +873,18 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 if msg: await msg.answer('На сколько часов открыть выборы Президента? (0,1–720)')
             elif data == 'president_panel':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
-                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('👑 Назначить министра','minister_new')],[('⚖️ Список правительства','government')],[('⬅️ Назад','main')]])
+                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('👑 Назначить министра','minister_new')],[('⚖️ Список правительства','government')],[('📋 Заявки на гражданство','president_apps')],[('⬅️ Назад','main')]])
+            elif data == 'president_apps':
+                if not president: await callback.answer('Нет доступа.',show_alert=True); return
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT id,author_username,data FROM applications WHERE type='citizenship' AND status='pending' ORDER BY id LIMIT 20")
+                lines = []
+                for row in rows:
+                    payload = row['data'] if isinstance(row['data'], dict) else json.loads(row['data'])
+                    lines.append(f"№{row['id']} — {payload.get('full_name', 'ФИО не указано')} (@{row['author_username']})")
+                buttons = [[(f"✅ Одобрить №{row['id']}", f"app_approve:{row['id']}"), (f"❌ Отклонить №{row['id']}", f"pres_reject:{row['id']}")] for row in rows]
+                buttons.append([('⬅️ Назад','president_panel')])
+                await edit('📋 <b>Заявки на гражданство</b>\n\n' + ('\n'.join(lines) if lines else 'Ожидающих заявок нет.'), buttons)
             elif data == 'decree_new':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 await state.set_state(Form.decree_title)
@@ -893,6 +937,10 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 async with pool.acquire() as conn:
                     app=await conn.fetchrow("SELECT * FROM applications WHERE id=$1 AND status='pending'",app_id)
                     if not app: await callback.answer('Заявка уже обработана или не найдена.',show_alert=True); return
+                    # The President may approve citizenship applications; only the main admin
+                    # may approve party creation and party-joining applications.
+                    if not admin and not (president and app['type'] == 'citizenship'):
+                        await callback.answer('Нет прав для обработки этой заявки.', show_alert=True); return
                     payload=app['data'] if isinstance(app['data'],dict) else json.loads(app['data'])
                     if app['type']=='citizenship':
                         target_id=int(payload['user_id'])
@@ -906,12 +954,26 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                         await conn.execute('INSERT INTO party_members(party_id,username) VALUES($1,$2) ON CONFLICT DO NOTHING',party['id'],leader)
                     elif app['type']=='join_party':
                         pid=int(payload['party_id']); username=normalize_username(app['author_username'])
+                        party_active = await conn.fetchval("SELECT 1 FROM parties WHERE id=$1 AND status='active'", pid)
                         existing=await conn.fetchval('SELECT 1 FROM party_members WHERE LOWER(username)=LOWER($1)',username)
-                        if existing: raise ValueError('Пользователь уже состоит в партии')
+                        if not party_active:
+                            raise ValueError('Партия больше не активна')
+                        if existing:
+                            raise ValueError('Пользователь уже состоит в партии')
                         await conn.execute('INSERT INTO party_members(party_id,username) VALUES($1,$2)',pid,username)
                     await conn.execute("UPDATE applications SET status='approved',decided_at=$1 WHERE id=$2",to_db_dt(datetime.now(timezone.utc)),app_id)
                 await notify_user(bot,pool,app['author_username'],f'Ваша заявка №{app_id} одобрена.')
                 await edit(f'Заявка №{app_id} одобрена.',[[('⬅️ К заявкам','admin_apps')]])
+            elif data.startswith('pres_reject:'):
+                if not president: await callback.answer('Нет доступа.', show_alert=True); return
+                app_id = int(data.split(':', 1)[1])
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow("UPDATE applications SET status='rejected',decided_at=$1 WHERE id=$2 AND type='citizenship' AND status='pending' RETURNING author_username", to_db_dt(datetime.now(timezone.utc)), app_id)
+                if row:
+                    await notify_user(bot, pool, row['author_username'], f'Ваша заявка на гражданство №{app_id} отклонена Президентом.')
+                    await edit(f'Заявка №{app_id} отклонена.', [[('⬅️ К заявкам','president_apps')]])
+                else:
+                    await callback.answer('Заявка не найдена или уже обработана.', show_alert=True)
             elif data == 'admin_reject_prompt':
                 await state.update_data(admin_action='reject_application')
                 await state.set_state(Form.admin_application_decision)
