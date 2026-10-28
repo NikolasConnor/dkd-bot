@@ -561,7 +561,8 @@ async def law_desc(message: types.Message, state: FSMContext):
     await create_law(data["title"], message.text, message.from_user.username)
     await message.answer("✅ Закон создан.")
     await state.clear()
-    @dp.callback_query(lambda c: c.data == "menu_president")
+
+@dp.callback_query(lambda c: c.data == "menu_president")
 async def menu_president(callback: types.CallbackQuery):
     if not (await has_role_by_username(callback.from_user.username, "president") or callback.from_user.id == ADMIN_ID):
         await callback.answer("Вы не президент.", show_alert=True)
