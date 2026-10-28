@@ -1668,7 +1668,15 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 target_id = target['user_id']
         if not target or not target['is_citizen'] or not target_id:
             await message.answer('Гражданин с таким username не найден или гражданство ещё не одобрено. Проверьте username в Telegram.'); return
-        code = data['role_code']; action = data['role_action']
+        # FSM data must be read from the state; local variable `data` exists
+        # only in the callback handler and is not available in this message handler.
+        data = await state.get_data()
+        code = data.get('role_code')
+        action = data.get('role_action')
+        if code not in {r[0] for r in DEFAULT_ROLES} or code == 'citizen' or action not in {'set', 'remove'}:
+            await state.clear()
+            await message.answer('Не удалось определить выбранную роль. Откройте управление ролями и выберите роль заново.')
+            return
         if action == 'set':
             if code in {'president','prime_minister','deputy_prime_minister','central_bank_head'}:
                 async with pool.acquire() as conn:
