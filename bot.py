@@ -655,7 +655,169 @@ async def admin_toggle(callback: types.CallbackQuery):
     if active: await deactivate_admin(callback.from_user.id)
     else: await activate_admin(callback.from_user.id)
     await menu_admin(callback)
+# ===== АДМИН-ПАНЕЛЬ: ОБРАБОТЧИКИ КНОПОК =====
+@dp.callback_query(lambda c: c.data == "admin_subjects")
+async def admin_subjects(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): 
+        await callback.answer("Активируй режим!", show_alert=True)
+        return
+    await callback.message.edit_text("👥 СУБЪЕКТЫ\n\nВыбери действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список", callback_data="admin_subjects_list")],
+        [InlineKeyboardButton(text="➕ Выдать должность", callback_data="admin_assign_role_subj")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]
+    ]))
+    await callback.answer()
 
+@dp.callback_query(lambda c: c.data == "admin_subjects_list")
+async def admin_subjects_list(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    subjects = await get_all_subjects()
+    buttons = [[InlineKeyboardButton(text=s['full_name'], callback_data=f"admin_subj_view|{s['id']}")] for s in subjects]
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subjects")])
+    await callback.message.edit_text("👥 ВЫБЕРИ СУБЪЕКТА", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("admin_subj_view|"))
+async def admin_subj_view(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    sid = int(callback.data.split("|")[1])
+    async with db_pool.acquire() as conn:
+        s = await conn.fetchrow("SELECT * FROM subjects WHERE id = $1", sid)
+    roles = await get_subject_roles(sid)
+    text = f"👤 {s['full_name']}\nРоли: {', '.join([r['name'] for r in roles]) or 'Нет'}\nРепутация: {s['reputation']}"
+    await callback.message.answer(text)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_apps")
+async def admin_apps(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    apps = await get_pending_applications()
+    if not apps:
+        await callback.message.edit_text("📋 Заявок нет.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
+        await callback.answer()
+        return
+    buttons = []
+    for a in apps:
+        buttons.append([InlineKeyboardButton(text=f"#{a['id']} {a['type']} от {a['author_username']}", callback_data=f"admin_app_view|{a['id']}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")])
+    await callback.message.edit_text("📋 ЗАЯВКИ", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_view|"))
+async def admin_app_view(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    aid = int(callback.data.split("|")[1])
+    app = await get_application(aid)
+    buttons = [
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_app_approve|{aid}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_app_reject|{aid}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_apps")]
+    ]
+    await callback.message.edit_text(f"Заявка #{aid}: {app['type']} от {app['author_username']}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_approve|"))
+async def admin_app_approve(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    aid = int(callback.data.split("|")[1])
+    app = await get_application(aid)
+    data = app["data"] if isinstance(app["data"], dict) else json.loads(app["data"])
+    
+    if app["type"] == "citizenship":
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE subjects SET is_citizen = TRUE WHERE username = $1", app["author_username"])
+    elif app["type"] == "create_party":
+        async with db_pool.acquire() as conn:
+            await conn.execute("INSERT INTO parties (name, emoji, description, leader_username) VALUES ($1, $2, $3, $4)", data.get("name"), data.get("emoji"), data.get("description"), app["author_username"])
+    elif app["type"] == "join_party":
+        await add_party_member(data.get("party_id"), app["author_username"])
+    
+    await approve_application(aid, ADMIN_ID)
+    await callback.message.edit_text("✅ Одобрено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В админку", callback_data="menu_admin")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("admin_app_reject|"))
+async def admin_app_reject(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    aid = int(callback.data.split("|")[1])
+    await reject_application(aid, ADMIN_ID, "Отклонено Админом")
+    await callback.message.edit_text("❌ Отклонено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В админку", callback_data="menu_admin")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_duma")
+async def admin_duma(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗳 Начать выборы", callback_data="admin_duma_start")],
+        [InlineKeyboardButton(text="🛑 Завершить досрочно", callback_data="admin_duma_finish_now")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]
+    ])
+    await callback.message.edit_text("🗳 ГОСДУМА", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_duma_start")
+async def admin_duma_start(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_active(callback.from_user.id): return
+    await callback.message.answer("Отправь ДАТУ окончания выборов (например 2027-01-15 20:00):")
+    await state.set_state(ElectionForm.waiting_date_end)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_duma_finish_now")
+async def admin_duma_finish_now(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    el = await get_active_duma_election()
+    if el:
+        winners = await finish_duma_election(el["id"])
+        await callback.message.answer(f"🛑 Выборы завершены.\nПобедители: {len(winners)}")
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_pres_finish_now")
+async def admin_pres_finish_now(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    await force_finish_president()
+    await callback.message.answer("👑 Президент снят.")
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_broadcast")
+async def admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_active(callback.from_user.id): return
+    await callback.message.answer("📢 Отправь текст новости для рассылки ВСЕМ:")
+    await state.set_state(BroadcastForm.waiting_text)
+    await callback.answer()
+
+@dp.message(BroadcastForm.waiting_text)
+async def broadcast_send(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    await add_news(f"📢 {text}")
+    subjects = await get_all_subjects()
+    sent = 0
+    for s in subjects:
+        if s["user_id"]:
+            try:
+                await message.bot.send_message(s["user_id"], f"📢 НОВОСТЬ ДКД\n\n{text}")
+                sent += 1
+            except: pass
+    await message.answer(f"✅ Разослано: {sent} субъектам.")
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data == "admin_reset_confirm")
+async def admin_reset_confirm(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ", callback_data="admin_reset_yes")],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="menu_admin")]
+    ])
+    await callback.message.edit_text("⚠️ Сбросить все голоса?", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_reset_yes")
+async def admin_reset_yes(callback: types.CallbackQuery):
+    if not await is_admin_active(callback.from_user.id): return
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM votes")
+        await conn.execute("DELETE FROM duma_votes")
+    await callback.message.edit_text("🔄 Голоса сброшены.")
+    await callback.answer()
 async def background_watcher(bot: Bot):
     while True:
         try:
