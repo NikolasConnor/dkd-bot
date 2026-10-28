@@ -372,6 +372,10 @@ def build_main_menu(user_id, role, admin_active=False):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def build_profile_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Изменить ФИО", callback_data="profile_edit_fio")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")],
+    ])
 
 @dp.message(Command("start", "menu"), StateFilter(None))
 async def cmd_start(message: types.Message):
