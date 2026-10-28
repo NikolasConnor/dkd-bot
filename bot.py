@@ -146,6 +146,7 @@ async def init_db():
         await conn.execute("""CREATE TABLE IF NOT EXISTS pres_elections (id SERIAL PRIMARY KEY, started_at TIMESTAMP DEFAULT NOW(), ends_at TIMESTAMP, status TEXT DEFAULT 'active')""")
         await conn.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (user_id BIGINT PRIMARY KEY, is_active BOOLEAN DEFAULT FALSE)""")
 
+
 async def preload_data():
     async with db_pool.acquire() as conn:
         if await conn.fetchval("SELECT COUNT(*) FROM roles") == 0:
@@ -324,13 +325,6 @@ async def get_news(limit=20):
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT * FROM news ORDER BY id DESC LIMIT $1", limit)
 
-async def force_finish_president():
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE president_term SET status = 'finished' WHERE status = 'active'")
-        role = await conn.fetchrow("SELECT id FROM roles WHERE code = 'president'")
-        if role: await conn.execute("DELETE FROM subject_roles WHERE role_id = $1", role["id"])
-    await add_news("👑 Президент снят досрочно.")
-
 async def get_active_duma_election():
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM duma_elections WHERE status = 'active' ORDER BY id DESC LIMIT 1")
@@ -362,6 +356,8 @@ async def finish_duma_election(election_id):
                 subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", d)
                 if subj and role: await conn.execute("INSERT INTO subject_roles (subject_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", subj["id"], role["id"])
         await conn.execute("UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2", json.dumps(winners), election_id)
+
+def build_main_menu(user_id, role, admin_active=False):
        def build_main_menu(user_id, role, admin_active=False):
     kb = [
         [InlineKeyboardButton(text="👤 Профиль", callback_data="menu_profile"), InlineKeyboardButton(text="🗳 Голосования", callback_data="menu_vote")],
