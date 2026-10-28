@@ -144,6 +144,7 @@ async def init_db():
         await conn.execute("""CREATE TABLE IF NOT EXISTS president_term (id SERIAL PRIMARY KEY, username TEXT NOT NULL, started_at TIMESTAMP DEFAULT NOW(), ends_at TIMESTAMP, status TEXT DEFAULT 'active')""")
         await conn.execute("""CREATE TABLE IF NOT EXISTS party_lists (id SERIAL PRIMARY KEY, party_id INTEGER REFERENCES parties(id) ON DELETE CASCADE, election_id INTEGER REFERENCES duma_elections(id) ON DELETE CASCADE, username TEXT NOT NULL, UNIQUE(party_id, election_id, username))""")
         await conn.execute("""CREATE TABLE IF NOT EXISTS pres_elections (id SERIAL PRIMARY KEY, started_at TIMESTAMP DEFAULT NOW(), ends_at TIMESTAMP, status TEXT DEFAULT 'active')""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (user_id BIGINT PRIMARY KEY, is_active BOOLEAN DEFAULT FALSE)""")
 
 async def preload_data():
     async with db_pool.acquire() as conn:
