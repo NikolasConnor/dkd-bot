@@ -383,16 +383,29 @@ async def notify_user(bot: Bot, pool: asyncpg.Pool, username: str, text: str) ->
 
 
 async def broadcast(pool: asyncpg.Pool, bot: Bot, text: str) -> tuple[int, int]:
+    """Send a broadcast resiliently; malformed legacy user IDs must not stop the batch."""
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id FROM subjects WHERE is_citizen=TRUE")
+        # Older database rows may contain NULL / invalid user_id values.
+        users = await conn.fetch(
+            "SELECT DISTINCT user_id FROM subjects "
+            "WHERE is_citizen=TRUE AND user_id IS NOT NULL AND user_id > 0"
+        )
     ok = failed = 0
     for row in users:
-        try:
-            await bot.send_message(row['user_id'], text)
-            ok += 1
-        except TelegramAPIError:
+        user_id = row['user_id']
+        # Defend against unexpected data types in a legacy/corrupt database.
+        if not isinstance(user_id, int) or user_id <= 0:
             failed += 1
-            logging.warning("Рассылка не доставлена user_id=%s", row['user_id'])
+            logging.error("Пропущен некорректный user_id в рассылке: %r", user_id)
+            continue
+        try:
+            await bot.send_message(chat_id=user_id, text=text)
+            ok += 1
+        except Exception:
+            # Aiogram can raise Pydantic ValidationError before a TelegramAPIError
+            # is created (e.g. chat_id=None). One bad row must not abort the batch.
+            failed += 1
+            logging.exception("Рассылка не доставлена user_id=%r", user_id)
         await asyncio.sleep(0.04)
     return ok, failed
 
