@@ -38,6 +38,9 @@ DEFAULT_ROLES = [
     ("deputy", "Депутат ГосДумы", "🏛", 100),
     ("minister", "Министр", "📌", 20),
     ("deputy_prime_minister", "Вице-премьер", "🏛", 1),
+    ("prime_minister", "Премьер-министр", "🏛", 1),
+    ("central_bank_head", "Глава Центрального банка", "🏦", 1),
+    ("presidential_candidate", "Кандидат в Президенты", "🗳", 5),
     ("party_leader", "Лидер партии", "🎖", 100),
     ("citizen", "Гражданин", "👤", 100000),
 ]
@@ -151,6 +154,23 @@ async def init_db(pool: asyncpg.Pool) -> None:
             voter_username TEXT NOT NULL, party_id BIGINT NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
             created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
             UNIQUE(election_id, voter_username))""",
+        """CREATE TABLE IF NOT EXISTS party_list_reminders (
+            party_id BIGINT NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+            election_id BIGINT NOT NULL REFERENCES duma_elections(id) ON DELETE CASCADE,
+            last_reminded_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+            PRIMARY KEY(party_id,election_id))""",
+        """CREATE TABLE IF NOT EXISTS law_stage_votes (
+            law_id BIGINT NOT NULL REFERENCES laws(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL,
+            stage TEXT NOT NULL,
+            vote BOOLEAN NOT NULL,
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+            PRIMARY KEY(law_id,user_id,stage))""",
+        """CREATE TABLE IF NOT EXISTS role_terms (
+            role_code TEXT NOT NULL,
+            user_id BIGINT NOT NULL REFERENCES subjects(user_id) ON DELETE CASCADE,
+            ends_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+            PRIMARY KEY(role_code,user_id))""",
         """CREATE TABLE IF NOT EXISTS pres_elections (
             id BIGSERIAL PRIMARY KEY, ends_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
             status TEXT NOT NULL DEFAULT 'active', results JSONB,
@@ -348,8 +368,8 @@ async def finish_duma_election(pool: asyncpg.Pool, election_id: int) -> dict[str
             GROUP BY party_id ORDER BY votes DESC,party_id""", election_id)
         results = {str(row['party_id']): row['votes'] for row in votes}
         winner = votes[0]['party_id'] if votes else None
+        await conn.execute("DELETE FROM subject_roles sr USING roles r WHERE sr.role_id=r.id AND r.code='deputy'")
         if winner is not None:
-            await conn.execute("DELETE FROM subject_roles sr USING roles r WHERE sr.role_id=r.id AND r.code='deputy'")
             candidates = await conn.fetch("SELECT username FROM party_lists WHERE election_id=$1 AND party_id=$2 ORDER BY username LIMIT 3", election_id, winner)
             for item in candidates:
                 person = await conn.fetchrow("SELECT user_id FROM subjects WHERE LOWER(username)=LOWER($1) AND is_citizen=TRUE", item['username'])
@@ -357,6 +377,8 @@ async def finish_duma_election(pool: asyncpg.Pool, election_id: int) -> dict[str
                     await conn.execute("""INSERT INTO subject_roles(subject_id,role_id)
                         SELECT s.id,r.id FROM subjects s,roles r WHERE s.user_id=$1 AND r.code='deputy'
                         ON CONFLICT DO NOTHING""", person['user_id'])
+                    await conn.execute("""INSERT INTO role_terms(role_code,user_id,ends_at) VALUES('deputy',$1,$2)
+                        ON CONFLICT(role_code,user_id) DO UPDATE SET ends_at=EXCLUDED.ends_at""", person['user_id'], to_db_dt(datetime.now(timezone.utc) + timedelta(days=90)))
         await conn.execute("UPDATE duma_elections SET status='finished',results=$1::jsonb WHERE id=$2", json.dumps({'votes': results, 'winner_party_id': winner}), election_id)
         return {'votes': results, 'winner_party_id': winner}
 
@@ -367,8 +389,10 @@ async def finish_pres_election(pool: asyncpg.Pool, election_id: int) -> dict[str
         results = {str(r['candidate_id']): r['votes'] for r in rows}
         winner = rows[0]['candidate_id'] if rows else None
         await conn.execute("UPDATE pres_elections SET status='finished',results=$1::jsonb WHERE id=$2", json.dumps({'votes': results, 'winner': winner}), election_id)
-        if winner and winner != '5':
+        if winner is not None:
             await conn.execute("DELETE FROM subject_roles sr USING roles r WHERE sr.role_id=r.id AND r.code='president'")
+            await conn.execute("DELETE FROM role_terms WHERE role_code='president'")
+        if winner and winner != '5':
             candidate_name = CANDIDATES.get(winner)
             if candidate_name:
                 person = await conn.fetchrow("SELECT user_id FROM subjects WHERE LOWER(full_name)=LOWER($1) AND is_citizen=TRUE LIMIT 1", candidate_name)
@@ -376,6 +400,8 @@ async def finish_pres_election(pool: asyncpg.Pool, election_id: int) -> dict[str
                     await conn.execute("""INSERT INTO subject_roles(subject_id,role_id)
                         SELECT s.id,r.id FROM subjects s,roles r WHERE s.user_id=$1 AND r.code='president'
                         ON CONFLICT DO NOTHING""", person['user_id'])
+                    await conn.execute("""INSERT INTO role_terms(role_code,user_id,ends_at) VALUES('president',$1,$2)
+                        ON CONFLICT(role_code,user_id) DO UPDATE SET ends_at=EXCLUDED.ends_at""", person['user_id'], to_db_dt(datetime.now(timezone.utc) + timedelta(days=90)))
         return {'votes': results, 'winner': winner}
 
 
@@ -499,6 +525,13 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
             await bot.send_message(ADMIN_ID, f"Заявка на создание партии №{app['id']}. Откройте 🛠 Админка → 📋 Заявки.")
         except TelegramAPIError:
             pass
+        async with pool.acquire() as conn:
+            presidents = await conn.fetch("SELECT s.user_id FROM subjects s JOIN subject_roles sr ON sr.subject_id=s.id JOIN roles r ON r.id=sr.role_id WHERE r.code='president'")
+        for row in presidents:
+            try:
+                await bot.send_message(row['user_id'], f"Поступила заявка на создание партии №{app['id']} от @{username}. Решение принимает главный администратор.")
+            except TelegramAPIError:
+                pass
 
     @dp.message(Form.join_party)
     async def join_party_name(message: Message, state: FSMContext):
@@ -657,12 +690,22 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
             await message.answer("Гражданин не найден. Введите username ещё раз.")
             return
         data = await state.get_data()
-        ok = await add_role(pool, person['user_id'], data['role_code'])
+        role_code = data['role_code']
+        removed_usernames = []
+        if role_code in {'prime_minister', 'deputy_prime_minister', 'central_bank_head'}:
+            async with pool.acquire() as conn:
+                removed_usernames = await conn.fetch("SELECT s.username FROM subjects s JOIN subject_roles sr ON sr.subject_id=s.id JOIN roles r ON r.id=sr.role_id WHERE r.code=$1 AND s.user_id<>$2", role_code, person['user_id'])
+                await conn.execute("DELETE FROM subject_roles sr USING subjects s,roles r WHERE sr.subject_id=s.id AND sr.role_id=r.id AND r.code=$1 AND s.user_id<>$2", role_code, person['user_id'])
+        ok = await add_role(pool, person['user_id'], role_code)
         await state.clear()
         if not ok:
-            await message.answer("Не удалось назначить роль: достигнут лимит или гражданин не найден.")
+            await message.answer("Не удалось назначить роль: проверьте гражданство и лимит должности.")
             return
+        for old in removed_usernames:
+            await notify_user(bot, pool, old['username'], f"Ваши полномочия «{data['role_name']}» переданы другому гражданину.")
         await notify_user(bot, pool, username, f"Вам назначена должность: {data['role_name']}.")
+        async with pool.acquire() as conn:
+            await conn.execute('INSERT INTO news(text) VALUES($1)', f"Президент назначил {person['full_name']} на должность: {data['role_name']}.")
         await message.answer(f"{person['full_name']} назначен(а): {data['role_name']}.")
 
     @dp.message(Form.election_duration)
@@ -733,9 +776,13 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
             citizen = bool(person and person['is_citizen'])
             role_set = await roles_for(pool, uid) if citizen else set()
             admin = uid == ADMIN_ID
+            admin_active = await is_admin(pool, uid) if admin else False
             president = admin or 'president' in role_set
             deputy = admin or 'deputy' in role_set
             msg = callback.message
+            if data.startswith('admin_') and data not in {'admin_panel','admin_activate','admin_deactivate'} and admin and not admin_active:
+                await callback.answer('Сначала активируйте админку кнопкой 🔓 Активировать.', show_alert=True)
+                return
 
             async def edit(text: str, rows: list[list[tuple[str, str]]] | None = None):
                 if msg:
@@ -759,12 +806,14 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
             elif data == 'documents':
                 await edit('📜 Документы', [[('📚 Законы','laws'),('📖 Конституция','constitution')],[('⬅️ Назад','main')]])
             elif data == 'constitution':
-                await edit('📖 Конституция: раздел находится в разработке.', [[('⬅️ Назад','documents')]])
+                await edit('📖 <b>Основы Конституции</b>\n\n1. Суверенитет принадлежит гражданам государства.\n2. Гражданство предоставляется после одобрения заявки Президентом или главным администратором.\n3. Президент руководит исполнительной властью, издаёт указы и назначает членов Правительства. Срок полномочий — 90 дней.\n4. Госдума состоит из депутатов, избранных по партийным спискам, принимает законы и может назначать президентские выборы. Срок полномочий Думы — 90 дней.\n5. Закон проходит три этапа: голосование Госдумы, рассмотрение Правительством и подписание Президентом.\n6. Обычные указы публикуются в газете и рассылаются гражданам. Секретные указы доступны только адресату.\n7. Администратор обеспечивает работу системы и может применять предусмотренные административные полномочия.', [[('⬅️ Назад','documents')]])
             elif data == 'laws':
                 async with pool.acquire() as conn:
-                    rows = await conn.fetch("SELECT id,title,status FROM laws ORDER BY id DESC LIMIT 15")
-                text = '📚 <b>Законы и законопроекты</b>\n' + ('\n'.join(f"№{r['id']} — {r['title']} ({r['status']})" for r in rows) if rows else 'Пока нет законопроектов.')
-                await edit(text, [[('⬅️ Назад','documents')]])
+                    rows = await conn.fetch("SELECT id,title,status FROM laws ORDER BY id DESC LIMIT 12")
+                text = '📚 <b>Законы и законопроекты</b>\n\n' + ('\n'.join(f"№{r['id']} — {r['title']} · {r['status']}" for r in rows) if rows else 'Пока нет законопроектов.')
+                buttons = [[(f"📄 №{r['id']} · {r['title'][:30]}", f"law_view:{r['id']}")] for r in rows]
+                buttons.append([('⬅️ Назад','documents')])
+                await edit(text, buttons)
             elif data == 'news':
                 async with pool.acquire() as conn: rows = await conn.fetch('SELECT id,text,created_at FROM news ORDER BY id DESC LIMIT 10')
                 text = '📰 <b>Газета</b>\n\n' + ('\n\n'.join(f"#{r['id']}\n{r['text']}" for r in rows) if rows else 'Новостей пока нет.')
@@ -856,6 +905,105 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                     try: await msg.answer_video(VIDEO_FILE_ID,caption='Ваш голос за партию учтён.')
                     except TelegramAPIError: await msg.answer('Ваш голос учтён, но видео отправить не удалось.')
                 await edit('Спасибо за участие!',[[('⬅️ В меню','main')]])
+            elif data.startswith('law_view:'):
+                law_id = int(data.split(':', 1)[1])
+                async with pool.acquire() as conn:
+                    law = await conn.fetchrow('SELECT * FROM laws WHERE id=$1', law_id)
+                    counts = await conn.fetchrow('SELECT COUNT(*) FILTER (WHERE vote) AS yes, COUNT(*) FILTER (WHERE NOT vote) AS no FROM law_votes WHERE law_id=$1', law_id)
+                    my_vote = await conn.fetchval('SELECT vote FROM law_votes WHERE law_id=$1 AND user_id=$2', law_id, uid)
+                if not law:
+                    await callback.answer('Законопроект не найден.', show_alert=True); return
+                body = f"📜 <b>Законопроект №{law_id}</b>\n<b>{law['title']}</b>\n\n{law['description']}\n\nСтатус: <b>{law['status']}</b>\nВ Думе: за {counts['yes']}, против {counts['no']}"
+                buttons = []
+                if law['status'] == 'duma' and deputy and my_vote is None:
+                    buttons += [[('✅ За','law_vote:'+str(law_id)+':1'),('❌ Против','law_vote:'+str(law_id)+':0')]]
+                if law['status'] == 'government' and ('minister' in role_set or 'prime_minister' in role_set or 'deputy_prime_minister' in role_set or admin):
+                    buttons += [[('✅ Правительство одобряет',f'law_stage:{law_id}:government:1'),('❌ Отклонить',f'law_stage:{law_id}:government:0')]]
+                if law['status'] == 'president' and president:
+                    buttons += [[('✍️ Подписать закон',f'law_sign:{law_id}'),('❌ Отклонить',f'law_sign_reject:{law_id}')]]
+                buttons.append([('⬅️ К законам','laws')])
+                await edit(body, buttons)
+            elif data.startswith('law_vote:'):
+                _, raw_id, raw_vote = data.split(':', 2)
+                law_id, vote = int(raw_id), raw_vote == '1'
+                if not deputy:
+                    await callback.answer('Голосовать по законопроектам могут только депутаты.', show_alert=True); return
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        law = await conn.fetchrow("SELECT id,status FROM laws WHERE id=$1 FOR UPDATE", law_id)
+                        if not law or law['status'] != 'duma':
+                            await callback.answer('Этот законопроект уже не голосуется в Думе.', show_alert=True); return
+                        await conn.execute('INSERT INTO law_votes(law_id,user_id,vote) VALUES($1,$2,$3)', law_id, uid, vote)
+                        total = await conn.fetchval("SELECT COUNT(DISTINCT sr.subject_id) FROM subject_roles sr JOIN roles r ON r.id=sr.role_id WHERE r.code='deputy'")
+                        cast = await conn.fetchval('SELECT COUNT(*) FROM law_votes WHERE law_id=$1', law_id)
+                        quorum = max(1, total // 2 + 1)
+                        if total > 0 and cast >= quorum:
+                            yes = await conn.fetchval('SELECT COUNT(*) FROM law_votes WHERE law_id=$1 AND vote=TRUE', law_id)
+                            await conn.execute("UPDATE laws SET status=$1 WHERE id=$2", 'government' if yes > cast / 2 else 'rejected', law_id)
+                            if yes > cast / 2:
+                                await conn.execute("INSERT INTO news(text) VALUES($1)", f"Законопроект №{law_id} «{(await conn.fetchval('SELECT title FROM laws WHERE id=$1',law_id))}» одобрен Госдумой и направлен в Правительство.")
+                await callback.answer('Голос учтён.')
+                await edit('Ваш голос по законопроекту учтён.', [[('📚 К законам','laws')]])
+            elif data.startswith('law_stage:'):
+                _, raw_id, stage, raw_vote = data.split(':', 3)
+                law_id, vote = int(raw_id), raw_vote == '1'
+                if not (('minister' in role_set) or ('prime_minister' in role_set) or ('deputy_prime_minister' in role_set) or admin):
+                    await callback.answer('Доступно только Правительству.', show_alert=True); return
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        law = await conn.fetchrow("SELECT id,status FROM laws WHERE id=$1 FOR UPDATE", law_id)
+                        if not law or law['status'] != 'government':
+                            await callback.answer('Законопроект уже обработан Правительством.', show_alert=True); return
+                        await conn.execute('INSERT INTO law_stage_votes(law_id,user_id,stage,vote) VALUES($1,$2,$3,$4)', law_id, uid, stage, vote)
+                        total = await conn.fetchval("SELECT COUNT(DISTINCT sr.subject_id) FROM subject_roles sr JOIN roles r ON r.id=sr.role_id WHERE r.code IN ('minister','prime_minister','deputy_prime_minister')")
+                        cast = await conn.fetchval("SELECT COUNT(*) FROM law_stage_votes WHERE law_id=$1 AND stage='government'", law_id)
+                        if total == 0:
+                            total = 1
+                        quorum = max(1, total // 2 + 1)
+                        if cast >= quorum:
+                            yes = await conn.fetchval("SELECT COUNT(*) FROM law_stage_votes WHERE law_id=$1 AND stage='government' AND vote=TRUE", law_id)
+                            new_status = 'president' if yes > cast / 2 else 'rejected'
+                            await conn.execute('UPDATE laws SET status=$1 WHERE id=$2', new_status, law_id)
+                            if new_status == 'president':
+                                await conn.execute("INSERT INTO news(text) VALUES($1)", f"Законопроект №{law_id} прошёл Правительство и направлен Президенту на подпись.")
+                await callback.answer('Решение Правительства учтено.')
+                await edit('Решение по законопроекту сохранено.', [[('📚 К законам','laws')]])
+            elif data.startswith('law_sign:') or data.startswith('law_sign_reject:'):
+                if not president:
+                    await callback.answer('Подписать закон может только Президент.', show_alert=True); return
+                reject = data.startswith('law_sign_reject:')
+                law_id = int(data.split(':', 1)[1])
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow("UPDATE laws SET status=$1 WHERE id=$2 AND status='president' RETURNING title", 'rejected' if reject else 'enacted', law_id)
+                    if row:
+                        await conn.execute('INSERT INTO news(text) VALUES($1)', f"{'Президент отклонил' if reject else 'Президент подписал'} закон №{law_id}: {row['title']}")
+                if row and not reject:
+                    await broadcast(pool, bot, f"📜 Закон подписан Президентом: {row['title']} (№{law_id}).")
+                await edit(('Закон отклонён.' if reject else 'Закон подписан и опубликован.') if row else 'Закон не найден на подписи.', [[('📚 К законам','laws')]])
+            elif data == 'pres_laws':
+                if not president:
+                    await callback.answer('Нет доступа.', show_alert=True); return
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT id,title,status FROM laws WHERE status='president' ORDER BY id")
+                buttons = [[(f"№{r['id']} · {r['title'][:35]}",f"law_view:{r['id']}")] for r in rows]
+                buttons.append([('⬅️ Назад','president_panel')])
+                await edit('📑 Законы, ожидающие подписи Президента:', buttons)
+            elif data == 'appoint_menu':
+                if not president:
+                    await callback.answer('Нет доступа.', show_alert=True); return
+                await edit('👔 <b>Назначение должностных лиц</b>', [[('Министр','appoint:minister:Министр'),('Вице-премьер','appoint:deputy_prime_minister:Вице-премьер')],[('Премьер-министр','appoint:prime_minister:Премьер-министр'),('Глава ЦБ','appoint:central_bank_head:Глава ЦБ')],[('⬅️ Назад','president_panel')]])
+            elif data.startswith('appoint:'):
+                if not president:
+                    await callback.answer('Нет доступа.', show_alert=True); return
+                _, role_code, role_name = data.split(':', 2)
+                await state.update_data(role_code=role_code, role_name=role_name)
+                await state.set_state(Form.minister_username)
+                if msg: await msg.answer('Введите username гражданина для назначения. Отправьте /menu, чтобы отменить ввод.')
+            elif data == 'pres_duma_start':
+                if not president:
+                    await callback.answer('Нет доступа.', show_alert=True); return
+                await state.set_state(Form.duma_duration)
+                if msg: await msg.answer('На сколько часов открыть выборы в Госдуму? (от 0,1 до 720)')
             elif data == 'duma_panel':
                 if not deputy: await callback.answer('Нет доступа.',show_alert=True); return
                 await edit('🏛 Панель Госдумы', [[('📜 Внести закон','law_new')],[('🏛 Созвать собрание','meeting_new')],[('🗳 Назначить выборы Президента','pres_election_new')],[('⬅️ Назад','main')]])
@@ -873,7 +1021,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 if msg: await msg.answer('На сколько часов открыть выборы Президента? (0,1–720)')
             elif data == 'president_panel':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
-                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('👑 Назначить министра','minister_new')],[('⚖️ Список правительства','government')],[('📋 Заявки на гражданство','president_apps')],[('⬅️ Назад','main')]])
+                await edit('👑 Панель Президента', [[('📢 Создать указ','decree_new')],[('📜 Обращение к народу','address_new')],[('👔 Назначить должностное лицо','appoint_menu')],[('🗳 Назначить выборы в Госдуму','pres_duma_start')],[('⚖️ Список правительства','government')],[('📑 Законы на подпись','pres_laws')],[('📋 Заявки на гражданство','president_apps')],[('⬅️ Назад','main')]])
             elif data == 'president_apps':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 async with pool.acquire() as conn:
@@ -902,7 +1050,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
             elif data == 'government':
                 if not president: await callback.answer('Нет доступа.',show_alert=True); return
                 async with pool.acquire() as conn:
-                    rows = await conn.fetch("""SELECT s.full_name,s.username,r.name,r.emoji FROM subjects s JOIN subject_roles sr ON sr.subject_id=s.id JOIN roles r ON r.id=sr.role_id WHERE r.code IN ('minister','deputy_prime_minister') ORDER BY r.name,s.full_name""")
+                    rows = await conn.fetch("""SELECT s.full_name,s.username,r.name,r.emoji FROM subjects s JOIN subject_roles sr ON sr.subject_id=s.id JOIN roles r ON r.id=sr.role_id WHERE r.code IN ('minister','deputy_prime_minister','prime_minister','central_bank_head') ORDER BY r.name,s.full_name""")
                 await edit('⚖️ <b>Правительство</b>\n'+('\n'.join(f"{r['emoji']} {r['name']}: {r['full_name']} (@{r['username']})" for r in rows) if rows else 'Назначенных министров пока нет.'),[[('⬅️ Назад','president_panel')]])
             elif data == 'admin_panel':
                 if not admin: await callback.answer('Доступ только главному администратору.',show_alert=True); return
@@ -939,6 +1087,8 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                     if not app: await callback.answer('Заявка уже обработана или не найдена.',show_alert=True); return
                     # The President may approve citizenship applications; only the main admin
                     # may approve party creation and party-joining applications.
+                    if admin and not admin_active and app['type'] != 'citizenship':
+                        await callback.answer('Сначала активируйте админку.', show_alert=True); return
                     if not admin and not (president and app['type'] == 'citizenship'):
                         await callback.answer('Нет прав для обработки этой заявки.', show_alert=True); return
                     payload=app['data'] if isinstance(app['data'],dict) else json.loads(app['data'])
@@ -952,6 +1102,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                         leader=payload['leader_username']
                         party=await conn.fetchrow("INSERT INTO parties(name,emoji,description,leader_username,status) VALUES($1,$2,$3,$4,'active') RETURNING id",payload['name'],payload['emoji'],payload['description'],leader)
                         await conn.execute('INSERT INTO party_members(party_id,username) VALUES($1,$2) ON CONFLICT DO NOTHING',party['id'],leader)
+                        await conn.execute('INSERT INTO news(text) VALUES($1)', f"Создана партия «{payload['name']}» во главе с @{leader}.")
                     elif app['type']=='join_party':
                         pid=int(payload['party_id']); username=normalize_username(app['author_username'])
                         party_active = await conn.fetchval("SELECT 1 FROM parties WHERE id=$1 AND status='active'", pid)
@@ -961,6 +1112,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                         if existing:
                             raise ValueError('Пользователь уже состоит в партии')
                         await conn.execute('INSERT INTO party_members(party_id,username) VALUES($1,$2)',pid,username)
+                        await conn.execute('INSERT INTO news(text) VALUES($1)', f"Гражданин @{username} вступил в партию «{payload.get('party_name', pid)}».")
                     await conn.execute("UPDATE applications SET status='approved',decided_at=$1 WHERE id=$2",to_db_dt(datetime.now(timezone.utc)),app_id)
                 await notify_user(bot,pool,app['author_username'],f'Ваша заявка №{app_id} одобрена.')
                 await edit(f'Заявка №{app_id} одобрена.',[[('⬅️ К заявкам','admin_apps')]])
@@ -1044,6 +1196,10 @@ async def election_monitor(pool: asyncpg.Pool, bot: Bot) -> None:
         try:
             now = to_db_dt(datetime.now(timezone.utc))
             async with pool.acquire() as conn:
+                expired_terms = await conn.fetch("SELECT role_code,user_id FROM role_terms WHERE ends_at <= $1", now)
+                for term in expired_terms:
+                    await conn.execute("DELETE FROM subject_roles sr USING roles r,subjects s WHERE sr.role_id=r.id AND sr.subject_id=s.id AND r.code=$1 AND s.user_id=$2", term['role_code'], term['user_id'])
+                    await conn.execute("DELETE FROM role_terms WHERE role_code=$1 AND user_id=$2", term['role_code'], term['user_id'])
                 pres = await conn.fetch("SELECT id FROM pres_elections WHERE status='active' AND ends_at <= $1",now)
                 duma = await conn.fetch("SELECT id FROM duma_elections WHERE status='active' AND ends_at <= $1",now)
                 active_duma = await conn.fetchrow("SELECT id FROM duma_elections WHERE status='active' AND ends_at > $1 ORDER BY id DESC LIMIT 1",now)
@@ -1058,16 +1214,20 @@ async def election_monitor(pool: asyncpg.Pool, bot: Bot) -> None:
                 async with pool.acquire() as conn: await conn.execute('INSERT INTO news(text) VALUES($1)','Выборы Госдумы завершены: '+json.dumps(result,ensure_ascii=False))
             if active_duma:
                 for party in parties:
-                    count=await pool.fetchval('SELECT COUNT(*) FROM party_lists WHERE party_id=$1 AND election_id=$2',party['id'],active_duma['id'])
+                    count = await pool.fetchval('SELECT COUNT(*) FROM party_lists WHERE party_id=$1 AND election_id=$2', party['id'], active_duma['id'])
                     if count < 1:
-                        async with pool.acquire() as conn:
-                            await conn.execute('UPDATE subjects SET reputation=reputation-10 WHERE LOWER(username)=LOWER($1)',party['leader_username'])
-                        await notify_user(bot,pool,party['leader_username'],f"Напоминание: у партии «{party['name']}» нет списка кандидатов. Репутация снижена на 10.")
+                        last = await pool.fetchval('SELECT last_reminded_at FROM party_list_reminders WHERE party_id=$1 AND election_id=$2', party['id'], active_duma['id'])
+                        if last is None or (now - last).total_seconds() >= REMINDER_INTERVAL_SECONDS:
+                            async with pool.acquire() as conn:
+                                await conn.execute('UPDATE subjects SET reputation=reputation-10 WHERE LOWER(username)=LOWER($1)', party['leader_username'])
+                                await conn.execute('''INSERT INTO party_list_reminders(party_id,election_id,last_reminded_at) VALUES($1,$2,$3)
+                                    ON CONFLICT(party_id,election_id) DO UPDATE SET last_reminded_at=EXCLUDED.last_reminded_at''', party['id'], active_duma['id'], now)
+                            await notify_user(bot,pool,party['leader_username'],f"Напоминание: у партии «{party['name']}» нет списка кандидатов. Репутация снижена на 10.")
         except asyncio.CancelledError:
             raise
         except Exception:
             logging.exception('Ошибка фонового контроля выборов')
-        await asyncio.sleep(REMINDER_INTERVAL_SECONDS)
+        await asyncio.sleep(30)
 
 
 async def main() -> None:
@@ -1098,3 +1258,5 @@ async def main() -> None:
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+                                   
