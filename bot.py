@@ -624,8 +624,28 @@ async def assign(callback: types.CallbackQuery):
 async def menu_admin(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     active = await is_admin_active(callback.from_user.id)
-    kb = [[InlineKeyboardButton(text="🔓 Активировать" if not active else "🔒 Деактивировать", callback_data="admin_toggle")], [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]]
-    await callback.message.edit_text("🛠 АДМИН-ПАНЕЛЬ", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    
+    # Если режим НЕ активен — показываем только кнопку активации
+    if not active:
+        kb = [
+            [InlineKeyboardButton(text="🔓 Активировать", callback_data="admin_toggle")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
+        ]
+    else:
+        # Если режим АКТИВЕН — показываем полную панель
+        kb = [
+            [InlineKeyboardButton(text="🔒 Деактивировать", callback_data="admin_toggle")],
+            [InlineKeyboardButton(text="👥 Субъекты", callback_data="admin_subjects"), InlineKeyboardButton(text="🎭 Партии", callback_data="admin_parties")],
+            [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_apps"), InlineKeyboardButton(text="📜 Законы", callback_data="admin_laws")],
+            [InlineKeyboardButton(text="📢 Указы", callback_data="admin_decrees"), InlineKeyboardButton(text="📰 Новости", callback_data="admin_news")],
+            [InlineKeyboardButton(text="📢 Опубликовать всем", callback_data="admin_broadcast")],
+            [InlineKeyboardButton(text="🗳 ГосДума", callback_data="admin_duma"), InlineKeyboardButton(text="👑 Снять Президента", callback_data="admin_pres_finish_now")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_status"), InlineKeyboardButton(text="🔄 Сброс", callback_data="admin_reset_confirm")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_main")]
+        ]
+    
+    status = "🔓 АКТИВЕН" if active else "🔒 НЕ АКТИВЕН"
+    await callback.message.edit_text(f"🛠 АДМИН-ПАНЕЛЬ\n\nСтатус: {status}\n\nВыбери действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_toggle")
