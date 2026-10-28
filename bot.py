@@ -362,10 +362,20 @@ async def finish_duma_election(election_id):
                 subj = await conn.fetchrow("SELECT id FROM subjects WHERE username = $1", d)
                 if subj and role: await conn.execute("INSERT INTO subject_roles (subject_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", subj["id"], role["id"])
         await conn.execute("UPDATE duma_elections SET status = 'finished', results = $1 WHERE id = $2", json.dumps(winners), election_id)
-        def build_main_menu(user_id, role, admin_active=False):
+       def build_main_menu(user_id, role, admin_active=False):
     kb = [
         [InlineKeyboardButton(text="👤 Профиль", callback_data="menu_profile"), InlineKeyboardButton(text="🗳 Голосования", callback_data="menu_vote")],
-        ...
+        [InlineKeyboardButton(text="🎭 Партии", callback_data="menu_parties"), InlineKeyboardButton(text="📜 Документы", callback_data="menu_docs")],
+        [InlineKeyboardButton(text="📰 Газета", callback_data="menu_news"), InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")],
+        [InlineKeyboardButton(text="❓ Помощь", callback_data="menu_help")],
+    ]
+    if role == "deputy" or user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton(text="🏛 Панель Госдумы", callback_data="menu_duma")])
+    if role == "president" or user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton(text="👑 Панель Президента", callback_data="menu_president")])
+    if user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton(text="🛠 Админка", callback_data="menu_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
     if role == "deputy" or user_id == ADMIN_ID: kb.append([InlineKeyboardButton(text="🏛 Панель Госдумы", callback_data="menu_duma")])
     if role == "president" or user_id == ADMIN_ID: kb.append([InlineKeyboardButton(text="👑 Панель Президента", callback_data="menu_president")])
     if user_id == ADMIN_ID: kb.append([InlineKeyboardButton(text="🛠 Админка", callback_data="menu_admin")])
