@@ -1475,7 +1475,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                 rows = [[('➕ ' + name, 'admin_role_set:' + code)] for code,name,_,_ in DEFAULT_ROLES if code != 'citizen']
                 rows += [[('➖ ' + name, 'admin_role_remove:' + code)] for code,name,_,_ in DEFAULT_ROLES if code != 'citizen']
                 rows.append([('⬅️ Назад','admin_panel')])
-                await edit('🧑‍⚖️ Выберите роль, затем введите Telegram ID гражданина.', rows)
+                await edit('🧑‍⚖️ Выберите роль, затем отправьте username в Telegram, например @Nikolas_Connor. Telegram ID тоже поддерживается. Отмена: /cancel', rows)
             elif data.startswith('admin_role_set:') or data.startswith('admin_role_remove:'):
                 if not admin or not admin_active:
                     await callback.answer('Сначала активируйте админку.', show_alert=True); return
@@ -1484,7 +1484,7 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
                     await callback.answer('Недопустимая роль.', show_alert=True); return
                 await state.update_data(role_code=code, role_action='set' if action == 'admin_role_set' else 'remove')
                 await state.set_state(Form.admin_role_target)
-                if msg: await msg.answer('Введите Telegram ID гражданина. Отмена: /cancel')
+                if msg: await msg.answer('Введите username гражданина, например @Nikolas_Connor. Можно также указать Telegram ID. Отмена: /cancel')
             elif data == 'admin_reputation':
                 if not admin or not admin_active:
                     await callback.answer('Сначала активируйте админку.', show_alert=True); return
@@ -1646,14 +1646,28 @@ def register_handlers(dp: Dispatcher, pool: asyncpg.Pool, bot: Bot) -> None:
     async def admin_role_target(message: Message, state: FSMContext):
         if not message.from_user or message.from_user.id != ADMIN_ID or not await is_admin(pool, ADMIN_ID):
             await state.clear(); await message.answer('Нет доступа или админка выключена.'); return
-        try:
-            target_id = int((message.text or '').strip())
-            if target_id <= 0: raise ValueError
-        except ValueError:
-            await message.answer('Введите положительный Telegram ID или /cancel.'); return
-        data = await state.get_data(); target = await subject(pool, target_id)
-        if not target or not target['is_citizen']:
-            await message.answer('Гражданин не найден или заявка ещё не одобрена.'); return
+        raw_target = (message.text or '').strip()
+        if not raw_target:
+            await message.answer('Введите username, например @Nikolas_Connor, или Telegram ID.'); return
+        target = None
+        target_id = None
+        # Поддерживаем и username, и старый способ по Telegram ID.
+        if re.fullmatch(r'\d+', raw_target):
+            target_id = int(raw_target)
+            if target_id > 0:
+                target = await subject(pool, target_id)
+        else:
+            normalized = raw_target.lstrip('@').strip().casefold()
+            if not re.fullmatch(r'[a-z0-9_]{5,32}', normalized):
+                await message.answer('Некорректный username. Укажите, например @Nikolas_Connor, или Telegram ID.'); return
+            async with pool.acquire() as conn:
+                target = await conn.fetchrow("""SELECT * FROM subjects
+                    WHERE LOWER(LTRIM(COALESCE(username,''), '@')) = $1
+                    ORDER BY is_citizen DESC, id ASC LIMIT 1""", normalized)
+            if target:
+                target_id = target['user_id']
+        if not target or not target['is_citizen'] or not target_id:
+            await message.answer('Гражданин с таким username не найден или гражданство ещё не одобрено. Проверьте username в Telegram.'); return
         code = data['role_code']; action = data['role_action']
         if action == 'set':
             if code in {'president','prime_minister','deputy_prime_minister','central_bank_head'}:
